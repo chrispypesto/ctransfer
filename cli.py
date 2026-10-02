@@ -144,15 +144,19 @@ def cmd_ssh(args) -> None:
     item = api.call("GET", f"/sessions/{args.transfer_id}")
     if not item.get("instance_name"):
         raise SystemExit("transfer has no instance")
-    details = api.lightsail().get_instance_access_details(instanceName=item["instance_name"], protocol="ssh")["accessDetails"]
-    keydir = Path(tempfile.mkdtemp(prefix="ctransfer-ssh-"))
-    key = keydir / "key"
-    key.write_text(details["privateKey"])
-    key.chmod(0o600)
-    (keydir / "key-cert.pub").write_text(details["certKey"])
+    lightsail = api.lightsail()
+    ip = lightsail.get_instance(instanceName=item["instance_name"])["instance"]["publicIpAddress"]
+    # Instances launch with the region's default key pair. (The short-lived certs from
+    # GetInstanceAccessDetails were rejected by Ubuntu 24.04 instances in testing.)
+    key = api_mod.CONFIG_PATH.parent / f"lightsail-{api.region}.pem"
+    if not key.exists():
+        key.parent.mkdir(parents=True, exist_ok=True)
+        key.write_text(lightsail.download_default_key_pair()["privateKeyBase64"])
+        key.chmod(0o600)
+    known_hosts = api_mod.CONFIG_PATH.parent / "known_hosts"
     remote = "tmux attach -t claude || bash -l" if not args.command else args.command
-    cmd = ["ssh", "-i", str(key), "-o", f"CertificateFile={keydir / 'key-cert.pub'}", "-o", "StrictHostKeyChecking=accept-new",
-           "-t", f"{details['username']}@{details['ipAddress']}", remote]
+    cmd = ["ssh", "-i", str(key), "-o", f"UserKnownHostsFile={known_hosts}", "-o", "StrictHostKeyChecking=accept-new",
+           "-t", f"ubuntu@{ip}", remote]
     os.execvp("ssh", cmd)
 
 
