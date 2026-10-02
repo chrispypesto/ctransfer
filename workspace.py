@@ -131,7 +131,8 @@ def _apply_dirty(root: Path, src: Path) -> None:
 
 def restore_fresh(meta: dict, src, root) -> None:
     """Recreate a captured workspace at an empty (or missing) root."""
-    src, root = Path(src), Path(root)
+    # git runs with -C root, so a relative src would resolve against the wrong directory.
+    src, root = Path(src).resolve(), Path(root)
     if root.exists() and any(root.iterdir()):
         raise WorkspaceError(f"{root} already exists and is not empty")
     root.mkdir(parents=True, exist_ok=True)
@@ -158,7 +159,7 @@ def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
     Returns a list of problems. With dry_run nothing in the working tree changes (the bundle's
     refs are still fetched into refs/ctransfer/remote/*). Raises WorkspaceError on failure.
     """
-    src, root = Path(src), Path(root)
+    src, root = Path(src).resolve(), Path(root)
     if meta["kind"] == "tree":
         if not dry_run:
             root.mkdir(parents=True, exist_ok=True)
