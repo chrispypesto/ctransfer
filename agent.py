@@ -227,6 +227,11 @@ def main(argv=None) -> None:
         shutil.rmtree(args.bundle_dir, ignore_errors=True)
         if not args.manual:
             agent = Agent(state)
+            # claude registers in ~/.claude/sessions a few seconds after tmux starts it.
+            for _ in range(30):
+                if agent.status() != "stopped":
+                    break
+                time.sleep(1)
             agent.post("ready", {"status": agent.status()})
             install_service(args.state)
     else:

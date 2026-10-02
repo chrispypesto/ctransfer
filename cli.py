@@ -121,7 +121,8 @@ def cmd_push(args) -> None:
     item = push(api_mod.Api.from_config(), info, home=sessions.claude_home(), remote_control=args.remote_control,
                 file_history=not args.no_file_history, wait=not args.no_wait)
     tid = item["transfer_id"]
-    _print(f"\nsession {info.session_id} is running in the cloud as transfer {tid}")
+    where = "is running in the cloud" if item["state"] == "running" else f"is {item['state']} in the cloud"
+    _print(f"\nsession {info.session_id} {where} as transfer {tid}")
     if info.live:
         _print("exit the local session now (/exit): continuing locally will diverge from the cloud copy")
     _print(f"attach:   ctransfer ssh {tid}\nbring back: ctransfer pull {tid}")
