@@ -210,7 +210,8 @@ def main(argv=None) -> None:
     r.add_argument("--bundle-dir", type=Path, required=True)
     r.add_argument("--user", default="ubuntu")
     r.add_argument("--state", type=Path, default=STATE_PATH)
-    r.add_argument("--no-service", action="store_true", help="don't install the systemd unit (manual spike)")
+    r.add_argument("--manual", action="store_true",
+                   help="manual spike: no control plane, so skip the ready report and the systemd agent")
     run = sub.add_parser("run")
     run.add_argument("--state", type=Path, default=STATE_PATH)
     args = ap.parse_args(argv)
@@ -224,9 +225,9 @@ def main(argv=None) -> None:
         args.state.chmod(0o600)
         args.boot.unlink()  # held the Claude token; it now lives only in the user's ~/.ctransfer/env
         shutil.rmtree(args.bundle_dir, ignore_errors=True)
-        agent = Agent(state)
-        agent.post("ready", {"status": agent.status()})
-        if not args.no_service:
+        if not args.manual:
+            agent = Agent(state)
+            agent.post("ready", {"status": agent.status()})
             install_service(args.state)
     else:
         Agent(json.loads(args.state.read_text())).run()
