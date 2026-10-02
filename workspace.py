@@ -173,7 +173,11 @@ def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
     target, branch = meta["head"], meta.get("branch")
     local_head = _try_git(root, "rev-parse", "--verify", "-q", "HEAD")
 
-    dirty = bool(git(root, "status", "--porcelain").strip())
+    # Untracked credential files never left this machine and the cloud copy won't touch them,
+    # so they neither count as local changes nor get stashed.
+    entries = _split_z(git(root, "status", "--porcelain", "-z", "--untracked-files=all"))
+    secrets = [e[3:] for e in entries if e.startswith("?? ") and is_secret_name(e[3:])]
+    dirty = len(entries) > len(secrets)
     if dirty and not stash:
         problems.append(f"{root} has uncommitted changes (commit them or pass --stash)")
     branch_exists = bool(branch and _try_git(root, "rev-parse", "--verify", "-q", f"refs/heads/{branch}"))
@@ -185,7 +189,8 @@ def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
         return problems
 
     if dirty:
-        git(root, "stash", "push", "-q", "-u", "-m", f"ctransfer pull {int(time.time())}")
+        git(root, "stash", "push", "-q", "-u", "-m", f"ctransfer pull {int(time.time())}",
+            "--", ".", *[f":(exclude,literal){s}" for s in secrets])
     if local_head:
         git(root, "update-ref", f"refs/ctransfer/backup/{int(time.time())}", local_head)
     if branch_exists:
