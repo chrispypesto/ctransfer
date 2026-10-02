@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from . import api as api_mod
-from . import bundle, net, sessions
+from . import apply, bundle, net, sessions, workspace
 
 POLL_SEC = 10
 
@@ -54,6 +54,42 @@ def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = 
     api.call("POST", f"/sessions/{tid}/launch")
     _print(f"launched transfer {tid}")
     return wait_for(api, tid, {"running"}, timeout=25 * 60, sleep=sleep) if wait else api.call("GET", f"/sessions/{tid}")
+
+
+def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = False, stash: bool = False,
+         terminate: bool = True, sleep=time.sleep) -> dict:
+    item = api.call("GET", f"/sessions/{tid}")
+    if item["state"] != "exported":
+        if item["state"] in ("running", "export_requested"):
+            api.call("POST", f"/sessions/{tid}/export")
+            _print("export requested; the VM finishes its current turn first")
+        item = wait_for(api, tid, {"exported"}, timeout=50 * 60, sleep=sleep)
+    with tempfile.TemporaryDirectory(prefix="ctransfer-pull-") as tmp:
+        path = Path(tmp) / "export.tgz"
+        net.get_file(item["download_url"], path)
+        manifest = bundle.extract(path, Path(tmp) / "x")
+        result = apply.apply_export(Path(tmp) / "x", manifest, home=home, force=force, as_fork=as_fork, stash=stash)
+    if terminate:
+        api.call("DELETE", f"/sessions/{tid}")
+    return result
+
+
+def cmd_pull(args) -> None:
+    result = pull(api_mod.Api.from_config(), args.transfer_id, home=sessions.claude_home(), force=args.force,
+                  as_fork=args.as_fork, stash=args.stash, terminate=not args.keep_vm)
+    _report_pull(result)
+
+
+def cmd_apply(args) -> None:
+    with tempfile.TemporaryDirectory(prefix="ctransfer-apply-") as tmp:
+        manifest = bundle.extract(args.bundle, tmp)
+        _report_pull(apply.apply_export(tmp, manifest, force=args.force, as_fork=args.as_fork, stash=args.stash))
+
+
+def _report_pull(result: dict) -> None:
+    if result["backup"]:
+        _print(f"previous local state backed up to {result['backup']}")
+    _print(f"pulled. continue with:  claude --resume {result['session_id']}")
 
 
 def cmd_configure(args) -> None:
@@ -155,6 +191,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-wait", action="store_true")
     p.set_defaults(fn=cmd_push)
 
+    def overwrite_args(p):
+        p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged")
+        p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
+        p.add_argument("--stash", action="store_true", help="stash local uncommitted changes instead of refusing")
+
+    p = sub.add_parser("pull", help="bring a cloud session back, overwriting the local copy")
+    p.add_argument("transfer_id")
+    overwrite_args(p)
+    p.add_argument("--keep-vm", action="store_true", help="don't delete the VM after pulling")
+    p.set_defaults(fn=cmd_pull)
+
+    p = sub.add_parser("apply", help="apply an export bundle file locally (manual spike)")
+    p.add_argument("bundle")
+    overwrite_args(p)
+    p.set_defaults(fn=cmd_apply)
+
     p = sub.add_parser("ls", help="list transfers")
     p.set_defaults(fn=cmd_ls)
 
@@ -172,7 +224,7 @@ def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
     try:
         args.fn(args)
-    except (LookupError, net.HttpError) as e:
+    except (LookupError, net.HttpError, apply.ApplyError, workspace.WorkspaceError, bundle.BundleError) as e:
         raise SystemExit(f"error: {e}")
 
 
