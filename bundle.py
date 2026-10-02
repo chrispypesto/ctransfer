@@ -24,6 +24,8 @@ from . import sessions, workspace
 
 FORMAT = 1
 CONFIG_ITEMS = ("CLAUDE.md", "settings.json", "skills", "agents", "commands", "output-styles")
+# Synced from the claude.ai account on the VM itself; no need to carry it.
+CONFIG_EXCLUDE = {"skills/synced"}
 AGENT_MODULES = ("__init__.py", "sessions.py", "workspace.py", "bundle.py", "net.py", "agent.py")
 # Never shipped, whatever directory they turn up in.
 FORBIDDEN_NAMES = {".credentials.json", ".claude.json"}
@@ -87,7 +89,13 @@ def build(
             _copy(home / "file-history" / session_id, stage / "claude" / "file-history" / session_id, skipped)
         if include_config:
             for item in CONFIG_ITEMS:
-                _copy(home / item, stage / "claude" / item, skipped)
+                src = home / item
+                if src.is_dir():
+                    for child in src.iterdir():
+                        if f"{item}/{child.name}" not in CONFIG_EXCLUDE:
+                            _copy(child, stage / "claude" / item / child.name, skipped)
+                else:
+                    _copy(src, stage / "claude" / item, skipped)
         if include_agent:
             pkg = Path(__file__).parent
             agent_dir = stage / "agent" / "ctransfer"
