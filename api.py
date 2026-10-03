@@ -16,8 +16,6 @@ def load_config() -> dict:
     cfg = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
     if os.environ.get("CTRANSFER_API_URL"):
         cfg["api_url"] = os.environ["CTRANSFER_API_URL"]
-    if os.environ.get("CTRANSFER_REGION"):
-        cfg["region"] = os.environ["CTRANSFER_REGION"]
     return cfg
 
 
@@ -28,11 +26,9 @@ def save_config(cfg: dict) -> None:
 
 
 class Api:
-    def __init__(self, url: str, token: str | None = None, region: str = "us-east-1", profile: str | None = None):
+    def __init__(self, url: str, token: str | None = None):
         self.url = url.rstrip("/")
         self.token = token
-        self.region = region
-        self.profile = profile
 
     @classmethod
     def from_config(cls, *, signed_in: bool = True) -> "Api":
@@ -41,16 +37,11 @@ class Api:
             raise SystemExit("not configured: run `ctransfer configure --api-url <terraform output api_url>`")
         if signed_in and not cfg.get("token"):
             raise SystemExit("not signed in: run `ctransfer login`")
-        return cls(cfg["api_url"], cfg.get("token"), cfg.get("region", "us-east-1"), cfg.get("profile"))
+        return cls(cfg["api_url"], cfg.get("token"))
 
     def call(self, method: str, path: str, body: dict | None = None) -> dict:
         headers = {"authorization": f"Bearer {self.token}"} if self.token else {}
         return net.request_json(self.url + path, method=method, body=body, headers=headers)
-
-    def lightsail(self):
-        import boto3
-
-        return boto3.Session(profile_name=self.profile, region_name=self.region).client("lightsail")
 
 
 GITHUB_DEVICE_URL = "https://github.com/login/device/code"

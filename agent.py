@@ -96,8 +96,17 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
     workspace.restore_fresh(ws, bundle_dir / "workspace", vm_root)
     _write_global_config(home / ".claude.json", sorted({vm_cwd, str(vm_root)}))
 
+    ssh_dir = None
+    if boot.get("ssh_pubkey"):
+        # The pusher's per-transfer key: what `ctransfer ssh` logs in with.
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(mode=0o700, exist_ok=True)
+        with open(ssh_dir / "authorized_keys", "a") as f:
+            f.write(boot["ssh_pubkey"].strip() + "\n")
+        (ssh_dir / "authorized_keys").chmod(0o600)
+
     if user:
-        for p in filter(None, [claude_dir, home / ".claude.json", created_top or vm_root]):
+        for p in filter(None, [claude_dir, home / ".claude.json", created_top or vm_root, ssh_dir]):
             subprocess.run(["chown", "-R", f"{user}:{user}", str(p)], check=True)
 
     state = {
