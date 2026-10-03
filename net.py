@@ -28,6 +28,19 @@ def request_json(url: str, method: str = "POST", body: dict | None = None, heade
     return json.loads(raw) if raw else {}
 
 
+def post_form(url: str, fields: dict, timeout: int = 30) -> dict:
+    """POST application/x-www-form-urlencoded, expecting a JSON reply (GitHub's OAuth endpoints)."""
+    import urllib.parse
+
+    req = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode(), method="POST",
+                                 headers={"accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        raise HttpError(e.code, e.read().decode(errors="replace")) from None
+
+
 def put_file(url: str, path, timeout: int = 900) -> None:
     """Upload a file to a presigned S3 PUT URL."""
     size = os.path.getsize(path)

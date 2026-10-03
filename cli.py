@@ -100,6 +100,20 @@ def cmd_configure(args) -> None:
     print(json.dumps(cfg, indent=2))
 
 
+def cmd_login(args) -> None:
+    out = api_mod.login(api_mod.Api.from_config(signed_in=False), notify=_print)
+    cfg = api_mod.load_config()
+    cfg["token"] = out["token"]
+    api_mod.save_config(cfg)
+    _print(f"signed in as {out['login']}")
+
+
+def cmd_logout(args) -> None:
+    cfg = api_mod.load_config()
+    cfg.pop("token", None)
+    api_mod.save_config(cfg)
+
+
 def cmd_discover(args) -> None:
     info = sessions.discover(session_id=args.session, cwd=args.cwd)
     print(json.dumps({"session_id": info.session_id, "cwd": info.cwd, "status": info.status,
@@ -173,6 +187,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--region")
     p.add_argument("--profile", help="AWS profile used to sign requests")
     p.set_defaults(fn=cmd_configure)
+
+    sub.add_parser("login", help="sign in with GitHub").set_defaults(fn=cmd_login)
+    sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
 
     def session_args(p):
         p.add_argument("--session", help="session id (default: newest session for --cwd)")
