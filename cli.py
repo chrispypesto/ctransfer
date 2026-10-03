@@ -198,6 +198,16 @@ def cmd_ssh(args) -> None:
     os.execvp("ssh", cmd)
 
 
+def cmd_usage(args) -> None:
+    u = api_mod.Api.from_config().call("GET", "/me/usage")
+    limits = u.get("limits") or {}
+
+    def of(key):
+        return f" of {limits[key]}" if key in limits else ""
+    print(f"{u['month']}: {u['billed_hours'] + u['open_hours']}{of('monthly_vm_hours')} VM-hours "
+          f"({u['open_hours']} on running VMs), {u['launches']} launches, {u['bytes'] / 1e6:.0f}{of('monthly_mb')} MB transferred")
+
+
 def cmd_rm(args) -> None:
     print(json.dumps(api_mod.Api.from_config().call("DELETE", f"/sessions/{args.transfer_id}"), indent=2))
 
@@ -252,6 +262,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("bundle")
     overwrite_args(p)
     p.set_defaults(fn=cmd_apply)
+
+    sub.add_parser("usage", help="this month's VM-hours and transfer volume").set_defaults(fn=cmd_usage)
 
     p = sub.add_parser("ls", help="list transfers")
     p.set_defaults(fn=cmd_ls)
