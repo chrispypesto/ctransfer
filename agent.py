@@ -155,7 +155,7 @@ class Agent:
     def __init__(self, state: dict, *, poster=None, uploader=None, status_fn=None, stopper=None, sleep=time.sleep):
         self.state = state
         self.post = poster or self._post
-        self.upload = uploader or net.put_file
+        self.upload = uploader or net.post_file
         self.status = status_fn or self._claude_status
         self.stop_claude = stopper or self._stop_claude
         self.sleep = sleep
@@ -177,10 +177,10 @@ class Agent:
     def tick(self) -> dict:
         resp = self.post("heartbeat", {"status": self.status()})
         if resp.get("export"):
-            self.export(resp["upload_url"], resp["export_key"])
+            self.export(resp["upload"], resp["export_key"])
         return resp
 
-    def export(self, upload_url: str, export_key: str) -> dict:
+    def export(self, upload: dict, export_key: str) -> dict:
         deadline = time.time() + EXPORT_WAIT_SEC
         while self.status() == "busy" and time.time() < deadline:
             self.sleep(5)
@@ -198,7 +198,7 @@ class Agent:
                 cwd=st["cwd"], workspace_dir=st["vm_cwd"], record_root=st["root"], extra_transcripts=extras,
                 extra={"transfer_id": st["transfer_id"]},
             )
-            self.upload(upload_url, out)
+            self.upload(upload, out)
         self.post("exported", {"export_key": export_key, "manifest": {k: manifest[k] for k in ("record_count", "last_uuid", "claude_version")}})
         return manifest
 

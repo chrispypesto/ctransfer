@@ -41,16 +41,31 @@ def post_form(url: str, fields: dict, timeout: int = 30) -> dict:
         raise HttpError(e.code, e.read().decode(errors="replace")) from None
 
 
-def put_file(url: str, path, timeout: int = 900) -> None:
-    """Upload a file to a presigned S3 PUT URL."""
-    size = os.path.getsize(path)
-    with open(path, "rb") as f:
-        req = urllib.request.Request(url, data=f, method="PUT",
-                                     headers={"Content-Length": str(size), "Content-Type": "application/octet-stream"})
-        try:
-            urllib.request.urlopen(req, timeout=timeout).close()
-        except urllib.error.HTTPError as e:
-            raise HttpError(e.code, e.read().decode(errors="replace")) from None
+def post_file(upload: dict, path, timeout: int = 900) -> None:
+    """Upload a file to a presigned S3 POST ({"url", "fields"}), streaming it as multipart/form-data."""
+    import uuid
+
+    boundary = uuid.uuid4().hex
+    head = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                    for k, v in upload["fields"].items())
+    head += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="bundle.tgz"\r\n'
+             "Content-Type: application/octet-stream\r\n\r\n").encode()
+    tail = f"\r\n--{boundary}--\r\n".encode()
+
+    def body():
+        yield head
+        with open(path, "rb") as f:
+            while chunk := f.read(1 << 20):
+                yield chunk
+        yield tail
+
+    size = len(head) + os.path.getsize(path) + len(tail)
+    req = urllib.request.Request(upload["url"], data=body(), method="POST", headers={
+        "Content-Length": str(size), "Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        urllib.request.urlopen(req, timeout=timeout).close()
+    except urllib.error.HTTPError as e:
+        raise HttpError(e.code, e.read().decode(errors="replace")) from None
 
 
 def get_file(url: str, path, timeout: int = 900) -> None:

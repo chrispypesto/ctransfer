@@ -63,7 +63,7 @@ def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = 
         keys.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.move(key, keys / tid)
         shutil.move(key.with_suffix(".pub"), keys / f"{tid}.pub")
-        net.put_file(created["upload_url"], path)
+        net.post_file(created["upload"], path)
     api.call("POST", f"/sessions/{tid}/launch")
     _print(f"launched transfer {tid}")
     return wait_for(api, tid, {"running"}, timeout=25 * 60, sleep=sleep) if wait else api.call("GET", f"/sessions/{tid}")
