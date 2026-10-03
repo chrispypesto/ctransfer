@@ -251,9 +251,33 @@ def cmd_ls(args) -> None:
 
 
 def cmd_status(args) -> None:
+    if not args.transfer_id:
+        return _status_current()
     item = api_mod.Api.from_config().call("GET", f"/sessions/{args.transfer_id}")
     item.pop("download_url", None)
     print(json.dumps(item, indent=2))
+
+
+def _status_current() -> None:
+    """The detached push of the invoking session: its marker, the cloud state, and the log tail."""
+    sid = sessions.current_session_id()
+    if not sid:
+        raise SystemExit("not running inside a Claude Code session; pass a transfer id")
+    marker = read_marker(sid)
+    if not marker:
+        raise SystemExit(f"no ctransfer push recorded for session {sid}")
+    if marker.get("transfer_id"):
+        try:
+            marker["cloud_state"] = api_mod.Api.from_config().call("GET", f"/sessions/{marker['transfer_id']}")["state"]
+        except (SystemExit, Exception) as e:  # not configured, no credentials, network: the marker still helps
+            marker["cloud_state"] = f"unknown ({e})"
+    print(json.dumps(marker, indent=2))
+    try:
+        tail = Path(marker["log"]).read_text().splitlines()[-10:]
+    except (KeyError, OSError):
+        tail = []
+    if tail:
+        print("\n".join(["", "log:", *tail]))
 
 
 def cmd_ssh(args) -> None:
@@ -340,7 +364,11 @@ def build_parser() -> argparse.ArgumentParser:
     for name, fn, help_ in (("status", cmd_status, "show one transfer"), ("ssh", cmd_ssh, "attach to the VM's claude tmux session"),
                             ("rm", cmd_rm, "delete a transfer's VM")):
         p = sub.add_parser(name, help=help_)
-        p.add_argument("transfer_id")
+        if name == "status":  # no id: the push of the invoking Claude Code session
+            p.add_argument("transfer_id", nargs="?")
+            p.add_argument("--current", action="store_true", help="the Claude Code session running this command (default)")
+        else:
+            p.add_argument("transfer_id")
         if name == "ssh":
             p.add_argument("command", nargs="?", help="run this instead of attaching to tmux")
         p.set_defaults(fn=fn)
