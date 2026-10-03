@@ -114,6 +114,21 @@ def cmd_logout(args) -> None:
     api_mod.save_config(cfg)
 
 
+def cmd_token(args) -> None:
+    api = api_mod.Api.from_config()
+    if args.action == "rm":
+        api.call("DELETE", "/me/claude-token")
+        return
+    if sys.stdin.isatty():
+        import getpass
+
+        token = getpass.getpass("token from `claude setup-token`: ")
+    else:
+        token = sys.stdin.read()
+    api.call("PUT", "/me/claude-token", {"token": token.strip()})
+    _print("Claude token saved; your VMs will run on it")
+
+
 def cmd_discover(args) -> None:
     info = sessions.discover(session_id=args.session, cwd=args.cwd)
     print(json.dumps({"session_id": info.session_id, "cwd": info.cwd, "status": info.status,
@@ -190,6 +205,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("login", help="sign in with GitHub").set_defaults(fn=cmd_login)
     sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
+
+    p = sub.add_parser("token", help="store (set, read from stdin) or delete (rm) the Claude token your VMs run on")
+    p.add_argument("action", choices=("set", "rm"))
+    p.set_defaults(fn=cmd_token)
 
     def session_args(p):
         p.add_argument("--session", help="session id (default: newest session for --cwd)")
