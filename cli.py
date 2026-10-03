@@ -57,7 +57,7 @@ def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = 
 
 
 def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = False, stash: bool = False,
-         terminate: bool = True, sleep=time.sleep) -> dict:
+         sleep=time.sleep) -> dict:
     item = api.call("GET", f"/sessions/{tid}")
     if item["state"] != "exported":
         if item["state"] in ("running", "export_requested"):
@@ -69,14 +69,13 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
         net.get_file(item["download_url"], path)
         manifest = bundle.extract(path, Path(tmp) / "x")
         result = apply.apply_export(Path(tmp) / "x", manifest, home=home, force=force, as_fork=as_fork, stash=stash)
-    if terminate:
-        api.call("DELETE", f"/sessions/{tid}")
+    api.call("DELETE", f"/sessions/{tid}")  # the server already tore the VM down at export; this is idempotent
     return result
 
 
 def cmd_pull(args) -> None:
     result = pull(api_mod.Api.from_config(), args.transfer_id, home=sessions.claude_home(), force=args.force,
-                  as_fork=args.as_fork, stash=args.stash, terminate=not args.keep_vm)
+                  as_fork=args.as_fork, stash=args.stash)
     _report_pull(result)
 
 
@@ -204,7 +203,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("pull", help="bring a cloud session back, overwriting the local copy")
     p.add_argument("transfer_id")
     overwrite_args(p)
-    p.add_argument("--keep-vm", action="store_true", help="don't delete the VM after pulling")
     p.set_defaults(fn=cmd_pull)
 
     p = sub.add_parser("apply", help="apply an export bundle file locally (manual spike)")
