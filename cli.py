@@ -20,6 +20,15 @@ def _print(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+def discover(args) -> sessions.SessionInfo:
+    session_id = args.session
+    if getattr(args, "current", False):
+        session_id = sessions.current_session_id()
+        if not session_id:
+            raise SystemExit("--current: not running inside a Claude Code session")
+    return sessions.discover(session_id=session_id, cwd=args.cwd)
+
+
 def wait_for(api, tid: str, states: set[str], timeout: int, poll: float = POLL_SEC, sleep=time.sleep) -> dict:
     deadline = time.time() + timeout
     last = None
@@ -102,20 +111,20 @@ def cmd_configure(args) -> None:
 
 
 def cmd_discover(args) -> None:
-    info = sessions.discover(session_id=args.session, cwd=args.cwd)
+    info = discover(args)
     print(json.dumps({"session_id": info.session_id, "cwd": info.cwd, "status": info.status,
                       "transcript": str(info.transcript), "pid": (info.live or {}).get("pid")}, indent=2))
 
 
 def cmd_bundle(args) -> None:
-    info = sessions.discover(session_id=args.session, cwd=args.cwd)
+    info = discover(args)
     m = bundle.build(args.out, kind="push", home=sessions.claude_home(), session_id=info.session_id,
                      project_dir=info.project_dir, cwd=info.cwd, include_config=True, include_agent=True)
     print(json.dumps(m, indent=2))
 
 
 def cmd_push(args) -> None:
-    info = sessions.discover(session_id=args.session, cwd=args.cwd)
+    info = discover(args)
     if info.status == "busy" and not args.allow_busy:
         raise SystemExit(f"session {info.session_id} is mid-turn; wait for it to go idle (or pass --allow-busy)")
     item = push(api_mod.Api.from_config(), info, home=sessions.claude_home(), remote_control=args.remote_control,
@@ -178,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     def session_args(p):
         p.add_argument("--session", help="session id (default: newest session for --cwd)")
         p.add_argument("--cwd", help="project directory (default: current directory)")
+        p.add_argument("--current", action="store_true", help="the Claude Code session running this command")
 
     p = sub.add_parser("discover", help="show which local session would be pushed")
     session_args(p)
