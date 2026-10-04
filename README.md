@@ -6,10 +6,11 @@ This repo has the client (the `ctransfer` CLI and the agent it ships to the VM) 
 
 ## Install
 
+Into any Python 3.10+ environment (venv, pipx, uv, conda, …):
+
 ```bash
-conda create -y -n ctransfer python=3.12
-conda run -n ctransfer pip install "git+https://github.com/chrispypesto/ctransfer.git"
-conda run -n ctransfer ctransfer configure --api-url <control plane api_url> --region <region> [--profile <aws profile>]
+pip install "git+https://github.com/chrispypesto/ctransfer.git"
+ctransfer configure --api-url <control plane api_url> --region <region> [--profile <aws profile>]
 ```
 
 Your AWS identity needs `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the control plane's API function, plus `lightsail:GetInstance` and `lightsail:DownloadDefaultKeyPair` for `ctransfer ssh`.
@@ -21,7 +22,7 @@ Your AWS identity needs `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` o
 /plugin install ctransfer@ctransfer
 ```
 
-The plugin needs the CLI installed. It looks for it on `PATH`, then in a conda env named `ctransfer`, then at `$CTRANSFER_BIN`, and prints the install steps if it finds none.
+The plugin needs the CLI installed. It runs `$CTRANSFER_BIN` if set, otherwise `ctransfer` from `PATH`, and prints the install steps if it finds neither.
 
 | Command | Does |
 |---|---|
@@ -67,7 +68,7 @@ Untracked credential-looking files (`.env`, `*.pem`, `id_rsa*`, `*.tfvars`, …)
 ## Development
 
 ```bash
-conda env create -f environment.yml && conda activate ctransfer
+pip install -e '.[test]'     # any Python 3.10+ env; environment.yml is the conda equivalent
 make test
 claude --plugin-dir plugin   # try the plugin from this checkout
 ```

@@ -5,16 +5,13 @@ exec 2>&1
 
 bin="${CTRANSFER_BIN:-}"
 [ -z "$bin" ] && bin="$(command -v ctransfer 2>/dev/null)"
-[ -z "$bin" ] && [ -n "${CONDA_EXE:-}" ] && [ -x "${CONDA_EXE%/bin/conda}/envs/ctransfer/bin/ctransfer" ] \
-  && bin="${CONDA_EXE%/bin/conda}/envs/ctransfer/bin/ctransfer"
 if [ -z "$bin" ]; then
   cat <<'MSG'
-ctransfer CLI not found. Install it, then retry /ctransfer:
-  conda create -y -n ctransfer python=3.12
-  conda run -n ctransfer pip install "git+https://github.com/chrispypesto/ctransfer.git"
-  conda run -n ctransfer ctransfer configure --api-url <your control plane api_url> --region <region>
-It is found on PATH, in a conda env named "ctransfer", or at $CTRANSFER_BIN.
-ctransfer also needs its control plane deployed in your AWS account: see the ctransfer README.
+ctransfer CLI not found. Install it into any Python 3.10+ environment, then retry /ctransfer:
+  pip install "git+https://github.com/chrispypesto/ctransfer.git"   # or pipx / uv tool install
+  ctransfer configure --api-url <your control plane api_url> --region <region>
+Claude Code finds it on PATH, or at $CTRANSFER_BIN (path to the ctransfer executable).
+ctransfer also needs its control plane deployed: see the ctransfer README.
 MSG
   exit 1
 fi
