@@ -97,8 +97,17 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
     workspace.restore_fresh(ws, bundle_dir / "workspace", vm_root)
     _write_global_config(home / ".claude.json", sorted({vm_cwd, str(vm_root)}))
 
+    ssh_dir = None
+    if boot.get("ssh_pubkey"):
+        # The pusher's per-transfer key: what `ctransfer ssh` logs in with.
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(mode=0o700, exist_ok=True)
+        with open(ssh_dir / "authorized_keys", "a") as f:
+            f.write(boot["ssh_pubkey"].strip() + "\n")
+        (ssh_dir / "authorized_keys").chmod(0o600)
+
     if user:
-        for p in filter(None, [claude_dir, home / ".claude.json", created_top or vm_root]):
+        for p in filter(None, [claude_dir, home / ".claude.json", created_top or vm_root, ssh_dir]):
             subprocess.run(["chown", "-R", f"{user}:{user}", str(p)], check=True)
 
     state = {
@@ -158,7 +167,7 @@ class Agent:
     def __init__(self, state: dict, *, poster=None, uploader=None, status_fn=None, stopper=None, sleep=time.sleep):
         self.state = state
         self.post = poster or self._post
-        self.upload = uploader or net.put_file
+        self.upload = uploader or net.post_file
         self.status = status_fn or self._claude_status
         self.stop_claude = stopper or self._stop_claude
         self.sleep = sleep
@@ -180,10 +189,10 @@ class Agent:
     def tick(self) -> dict:
         resp = self.post("heartbeat", {"status": self.status()})
         if resp.get("export"):
-            self.export(resp["upload_url"], resp["export_key"])
+            self.export(resp["upload"], resp["export_key"])
         return resp
 
-    def export(self, upload_url: str, export_key: str) -> dict:
+    def export(self, upload: dict, export_key: str) -> dict:
         deadline = time.time() + EXPORT_WAIT_SEC
         while self.status() == "busy" and time.time() < deadline:
             self.sleep(5)
@@ -201,7 +210,7 @@ class Agent:
                 cwd=st["cwd"], workspace_dir=st["vm_cwd"], record_root=st["root"], extra_transcripts=extras,
                 extra={"transfer_id": st["transfer_id"]},
             )
-            self.upload(upload_url, out)
+            self.upload(upload, out)
         self.post("exported", {"export_key": export_key, "manifest": {k: manifest[k] for k in ("record_count", "last_uuid", "claude_version")}})
         return manifest
 

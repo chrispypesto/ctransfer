@@ -17,6 +17,14 @@ def hermetic(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
 
 
+def configure_signed_in(api_url: str = "https://api.invalid/") -> None:
+    """A configured CLI with a saved sign-in, as `ctransfer configure` + `ctransfer login` leave it."""
+    from ctransfer import cli
+
+    cli.main(["configure", "--api-url", api_url])
+    api_mod.save_config({**api_mod.load_config(), "token": "test-token"})
+
+
 def run_git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True).stdout.strip()
 

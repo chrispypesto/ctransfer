@@ -2,7 +2,7 @@
 
 Move a live Claude Code session from your laptop to a cloud VM, keep working there, and pull it back. The transfer is verbatim: the transcript, `/rewind` checkpoints, project memory, and the workspace, including uncommitted and untracked changes.
 
-This repo has the client (the `ctransfer` CLI and the agent it ships to the VM) and the `/ctransfer` Claude Code plugin. The client talks to a control plane (AWS Lambda, DynamoDB, S3, SSM, Lightsail) that you deploy in your own AWS account. The control plane's code and Terraform aren't published yet.
+This repo has the client (the `ctransfer` CLI and the agent it ships to the VM) and the `/ctransfer` Claude Code plugin. The client talks to a control plane (AWS Lambda, Aurora DSQL, S3, SSM, Lightsail) that you deploy in your own AWS account. The control plane's code and Terraform aren't published yet.
 
 ## Install
 
@@ -10,10 +10,12 @@ Into any Python 3.10+ environment (venv, pipx, uv, conda, …):
 
 ```bash
 pip install "git+https://github.com/chrispypesto/ctransfer.git"
-ctransfer configure --api-url <control plane api_url> --region <region> [--profile <aws profile>]
+ctransfer configure --api-url <control plane api_url>
+ctransfer login                            # GitHub device flow
+claude setup-token | ctransfer token set   # the Claude token your VMs run on
 ```
 
-Your AWS identity needs `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the control plane's API function, plus `lightsail:GetInstance` and `lightsail:DownloadDefaultKeyPair` for `ctransfer ssh`.
+No AWS credentials are needed. `ctransfer ssh` uses a key that `push` generates for each transfer (`~/.config/ctransfer/keys/<id>`), so it works from the machine that pushed. `ctransfer usage` shows your free-tier usage.
 
 ## `/ctransfer` in Claude Code
 

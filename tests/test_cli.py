@@ -10,11 +10,11 @@ import pytest
 
 from ctransfer import api as api_mod
 from ctransfer import cli
-from tests.conftest import write_transcript
+from tests.conftest import configure_signed_in, write_transcript
 
 
 def configure():
-    cli.main(["configure", "--api-url", "https://api.invalid/", "--region", "us-east-1"])
+    configure_signed_in()
 
 
 def test_push_refuses_busy_session(laptop):

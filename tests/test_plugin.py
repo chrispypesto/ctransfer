@@ -11,6 +11,7 @@ import pytest
 
 from ctransfer import api as api_mod
 from ctransfer import cli
+from tests.conftest import configure_signed_in
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugin"
@@ -103,7 +104,7 @@ def test_guard_reports_a_failed_push_once():
 def test_slash_command_push_end_to_end(cli_env, args):
     """Dispatcher -> CLI --detach -> background worker -> marker the guard reads. The session has no
     transcript, so the worker fails after its wait, which the guard then reports."""
-    cli.main(["configure", "--api-url", "https://api.invalid/", "--region", "us-east-1"])
+    configure_signed_in()
     out = run(["bash", str(DISPATCH), *args], cli_env)
     assert out.returncode == 0 and "queued push" in out.stdout, out.stdout
 
