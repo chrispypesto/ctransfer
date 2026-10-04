@@ -8,7 +8,7 @@ from tests.conftest import make_repo, run_git
 
 
 def test_encode_project_dir_matches_claude():
-    assert sessions.encode_project_dir("/Users/me/Desktop/claude_transfer") == "-Users-me-Desktop-claude-transfer"
+    assert sessions.encode_project_dir("/Users/me/Desktop/my_project") == "-Users-me-Desktop-my-project"
 
 
 def test_discover_prefers_live_session(laptop):
