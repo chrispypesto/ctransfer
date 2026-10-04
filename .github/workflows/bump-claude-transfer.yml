@@ -1,0 +1,60 @@
+name: bump claude_transfer
+
+# Pins the newest main into claude_transfer's client/ submodule once claude_transfer's tests pass against it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: bump-claude-transfer
+  cancel-in-progress: true  # a newer main supersedes an in-flight bump
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}  # login shell so the conda env is active
+        working-directory: claude_transfer
+    steps:
+      # CLAUDE_TRANSFER_DEPLOY_KEY is a write deploy key on chrispypesto/claude_transfer.
+      - uses: actions/checkout@v4
+        with:
+          repository: chrispypesto/claude_transfer
+          ssh-key: ${{ secrets.CLAUDE_TRANSFER_DEPLOY_KEY }}
+          path: claude_transfer
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: claude_transfer/client
+
+      - name: Pin client/ to main
+        id: pin
+        run: |
+          git add client
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.pin.outputs.changed == 'true'
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: claude_transfer/environment.yml
+          activate-environment: claude-transfer
+
+      - if: steps.pin.outputs.changed == 'true'
+        run: make test
+
+      - if: steps.pin.outputs.changed == 'true'
+        name: Push the bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Bump ctransfer submodule to $(git -C client log -1 --format='%h: %s')"
+          git pull --rebase origin main
+          git push origin HEAD:main
