@@ -26,8 +26,8 @@ case "$sub" in
   status) if [ $# -gt 0 ]; then exec "$bin" status "$@"; else exec "$bin" status --current; fi ;;
   discover) exec "$bin" discover --current "$@" ;;
   pull | ls | rm) exec "$bin" "$sub" "$@" ;;
-  ssh) echo "ssh needs an interactive terminal. In another terminal run:  ctransfer ssh $*"; exit 1 ;;
+  ssh | resume) echo "$sub needs an interactive terminal. In another terminal run:  ctransfer $sub $*"; exit 1 ;;
   *)
-    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] | status [id] | discover | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id>]"
+    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] | status [id] | discover | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
     exit 2 ;;
 esac

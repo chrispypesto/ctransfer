@@ -165,7 +165,21 @@ def cmd_apply(args) -> None:
 def _report_pull(result: dict) -> None:
     if result["backup"]:
         _print(f"previous local state backed up to {result['backup']}")
-    _print(f"pulled. continue with:  claude --resume {result['session_id']}")
+    _print(f"pulled. continue with:  ctransfer resume {result['session_id']}")
+
+
+RETURN_NOTE = (
+    "This session was just brought back from a cloud VM to the user's laptop by ctransfer. The transfer is "
+    "complete: you are running locally again, in the original project directory, which now holds the work done "
+    "on the VM. Any earlier request in this conversation to pull or bring the session back has already been "
+    "carried out; do not repeat it.")
+
+
+def cmd_resume(args) -> None:
+    """claude --resume, told the session is back from the cloud (the counterpart of the VM's arrival note)."""
+    if not sessions.find_transcript(args.session_id):
+        raise SystemExit(f"no local transcript for session {args.session_id}; pull it first")
+    os.execvp("claude", ["claude", "--resume", args.session_id, "--append-system-prompt", RETURN_NOTE])
 
 
 def cmd_configure(args) -> None:
@@ -357,6 +371,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("bundle")
     overwrite_args(p)
     p.set_defaults(fn=cmd_apply)
+
+    p = sub.add_parser("resume", help="continue a pulled session locally (claude --resume, told it is back)")
+    p.add_argument("session_id")
+    p.set_defaults(fn=cmd_resume)
 
     p = sub.add_parser("ls", help="list transfers")
     p.set_defaults(fn=cmd_ls)

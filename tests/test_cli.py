@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import sys
 import uuid
 
 import pytest
@@ -71,3 +73,21 @@ def test_detached_push_refuses_while_one_is_active(laptop):
         cli.main(["push", "--session", laptop["sid"], "--when-idle", "--detach"])
     assert cli.read_marker(laptop["sid"])["state"] == "pushing"
     assert not (api_mod.CONFIG_PATH.parent / "logs").exists()
+
+
+def test_resume_tells_claude_the_session_is_back(laptop, tmp_path):
+    bindir = tmp_path / "bin"  # a stand-in claude that prints the argv it was exec'd with
+    bindir.mkdir()
+    (bindir / "claude").write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    (bindir / "claude").chmod(0o755)
+    out = subprocess.run([sys.executable, "-m", "ctransfer.cli", "resume", laptop["sid"]], capture_output=True, text=True,
+                         env={**os.environ, "PATH": f"{bindir}:/usr/bin:/bin"}, check=True).stdout
+    argv = json.loads(out)
+    assert argv[:2] == ["--resume", laptop["sid"]]
+    note = argv[argv.index("--append-system-prompt") + 1]
+    assert "back from a cloud VM" in note and "complete" in note
+
+
+def test_resume_needs_a_local_transcript(laptop):
+    with pytest.raises(SystemExit, match="pull it first"):
+        cli.main(["resume", "not-a-session"])

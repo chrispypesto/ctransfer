@@ -54,8 +54,9 @@ def test_dispatcher_passes_other_commands_to_cli(cli_env, laptop):
 
 def test_dispatcher_rejects_unknown_and_interactive_commands(cli_env):
     assert run(["bash", str(DISPATCH), "frobnicate"], cli_env).returncode == 2
-    out = run(["bash", str(DISPATCH), "ssh", "abc"], cli_env)
-    assert out.returncode == 1 and "ctransfer ssh abc" in out.stdout
+    for args in (["ssh", "abc"], ["resume", "sid-1"]):
+        out = run(["bash", str(DISPATCH), *args], cli_env)
+        assert out.returncode == 1 and f"ctransfer {' '.join(args)}" in out.stdout
 
 
 def test_dispatcher_explains_install_when_cli_missing():

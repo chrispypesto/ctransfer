@@ -36,7 +36,7 @@ What `/ctransfer` does:
 3. From then on, every prompt you send in that session is blocked, and the hook shows the push's progress instead (the worker logs to `~/.config/ctransfer/logs/<session>.log`). `/exit` once it says running. If the push fails, that is reported once and the session stays local.
 4. The VM's `claude` runs with an appended system prompt that says the transfer is complete, so it doesn't repeat the handoff.
 
-`ssh` needs a real terminal, so run `ctransfer ssh <id>` outside Claude Code. For `pull`, `/exit` the pushed session first, then run `/ctransfer pull <id>` from a new session in the same directory, or `ctransfer pull <id>` from a terminal.
+`ssh` and `resume` need a real terminal, so run them outside Claude Code. For `pull`, `/exit` the pushed session first, then run `/ctransfer pull <id>` from a new session in the same directory, or `ctransfer pull <id>` from a terminal. Then continue with `ctransfer resume <session-id>`: it runs `claude --resume` with an appended system prompt saying the session is back on the laptop, the counterpart of the VM's arrival note.
 
 ## CLI
 
@@ -47,7 +47,7 @@ ctransfer push [--remote-control]  # bundle, upload, launch, wait until the VM i
 ctransfer ssh <transfer-id>        # attach to the VM's `claude` tmux session (Ctrl-b d to detach)
 ctransfer ls | status <id>
 ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
-claude --resume <session-id>       # carry on locally
+ctransfer resume <session-id>      # carry on locally (claude --resume, told the session is back)
 ```
 
 `push --current` targets the Claude Code session running the command. `push --when-idle --detach` waits for that session's turn to end in a background worker, which is what `/ctransfer` uses.
