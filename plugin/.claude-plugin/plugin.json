@@ -1,0 +1,9 @@
+{
+  "name": "ctransfer",
+  "version": "0.1.0",
+  "description": "/ctransfer: move the current Claude Code session to a cloud VM you control, and back",
+  "author": {
+    "name": "chrispypesto"
+  },
+  "repository": "https://github.com/chrispypesto/ctransfer"
+}

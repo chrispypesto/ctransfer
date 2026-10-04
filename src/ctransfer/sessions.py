@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +52,34 @@ def live_sessions(home: Path | None = None) -> list[dict]:
 
 def find_live(session_id: str, home: Path | None = None) -> dict | None:
     return next((s for s in live_sessions(home) if s.get("sessionId") == session_id), None)
+
+
+def _parent_pid(pid: int) -> int | None:
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return int(out) if out else None
+    except (OSError, ValueError):
+        return None
+
+
+def current_session_id(home: Path | None = None) -> str | None:
+    """The Claude session that started this process: $CLAUDE_CODE_SESSION_ID (set in Claude's shells),
+    else the nearest ancestor process registered in sessions/<pid>.json."""
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return os.environ["CLAUDE_CODE_SESSION_ID"]
+    home = home or claude_home()
+    pid = os.getpid()
+    for _ in range(64):
+        if not pid or pid <= 1:
+            break
+        try:
+            entry = json.loads((home / "sessions" / f"{pid}.json").read_text())
+        except (OSError, ValueError):
+            entry = {}
+        if isinstance(entry.get("sessionId"), str):
+            return entry["sessionId"]
+        pid = _parent_pid(pid)
+    return None
 
 
 def find_transcript(session_id: str, home: Path | None = None) -> Path | None:

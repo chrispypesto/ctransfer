@@ -1,0 +1,15 @@
+{
+  "name": "ctransfer",
+  "description": "ctransfer: move live Claude Code sessions to a cloud VM and back",
+  "owner": {
+    "name": "chrispypesto"
+  },
+  "plugins": [
+    {
+      "name": "ctransfer",
+      "source": "./plugin",
+      "description": "/ctransfer: move the current Claude Code session to a cloud VM you control, and back",
+      "version": "0.1.0"
+    }
+  ]
+}
