@@ -1,0 +1,15 @@
+{
+  "description": "Block local prompts in a session ctransfer has pushed, and show the push's progress instead",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

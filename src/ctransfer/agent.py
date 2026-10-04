@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -126,6 +127,16 @@ def _install_claude(user: str | None, version: str | None) -> None:
     subprocess.run(_as_user(user, f"curl -fsSL https://claude.ai/install.sh | bash -s {arg}"), check=True)
 
 
+def arrival_note(transfer_id: str) -> str:
+    """Appended to the VM claude's system prompt: the transcript ends mid-handoff (often with the /ctransfer
+    request itself), so tell the model the move already happened."""
+    return (f"This session was moved from the user's laptop to a cloud VM by ctransfer (transfer {transfer_id}). "
+            "The transfer is complete: you are now running on the VM, in a copy of the same project at the same path. "
+            "Any earlier request in this conversation to transfer, push or /ctransfer the session has already been "
+            "carried out; do not repeat it. To bring the session back, the user runs "
+            f"`ctransfer pull {transfer_id}` on their laptop.")
+
+
 def _launch(state: dict, home: Path, claude_token: str, remote_control: bool) -> None:
     ctl = home / ".ctransfer"
     ctl.mkdir(mode=0o700, exist_ok=True)
@@ -137,7 +148,8 @@ def _launch(state: dict, home: Path, claude_token: str, remote_control: bool) ->
     launcher.write_text(
         "#!/bin/bash\nset -a; . \"$HOME/.ctransfer/env\"; set +a\n"
         f"cd {json.dumps(state['vm_cwd'])}\n"
-        f"exec \"$HOME/.local/bin/claude\" --resume {state['session_id']}{flags}\n"
+        f"exec \"$HOME/.local/bin/claude\" --resume {state['session_id']}"
+        f" --append-system-prompt {shlex.quote(arrival_note(state['transfer_id']))}{flags}\n"
     )
     launcher.chmod(0o700)
     if state["user"]:

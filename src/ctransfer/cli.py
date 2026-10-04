@@ -16,10 +16,82 @@ from . import api as api_mod
 from . import apply, bundle, net, sessions, workspace
 
 POLL_SEC = 10
+TURN_POLL_SEC = 1
+TURN_GRACE_POLLS = 5  # how long to wait for the invoking turn to show up as busy (if it has one)
 
 
 def _print(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+def requested_session_id(args) -> str | None:
+    """--session, or with --current the invoking session; None means 'discover from --cwd'."""
+    if getattr(args, "current", False):
+        session_id = sessions.current_session_id()
+        if not session_id:
+            raise SystemExit("--current: not running inside a Claude Code session")
+        return session_id
+    return args.session
+
+
+def discover(args) -> sessions.SessionInfo:
+    return sessions.discover(session_id=requested_session_id(args), cwd=args.cwd)
+
+
+ACTIVE_STATES = ("queued", "pushing", "launching", "running")
+
+
+def marker_dir() -> Path:
+    """Progress of detached pushes, one file per session; the plugin's prompt guard reads them."""
+    return api_mod.CONFIG_PATH.parent / "pushed"
+
+
+def marker_path(session_id: str) -> Path:
+    return marker_dir() / f"{session_id}.json"
+
+
+def read_marker(session_id: str) -> dict | None:
+    try:
+        return json.loads(marker_path(session_id).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def write_marker(sid: str, **fields) -> None:
+    path = marker_path(sid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {**(read_marker(sid) or {}), **fields, "updated_at": time.time()}
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, path)
+
+
+def clear_markers(tid: str) -> None:
+    for f in marker_dir().glob("*.json"):
+        try:
+            if json.loads(f.read_text()).get("transfer_id") == tid:
+                f.unlink()
+        except (OSError, ValueError):
+            continue
+
+
+def wait_turn_end(session_id: str, *, timeout_polls: int = 3600, sleep=None) -> None:
+    """Block until the session's current turn ends. /ctransfer starts this during its own turn, so first
+    give the turn a moment to show as busy, then wait for it to stop being busy."""
+    sleep = sleep or time.sleep
+
+    def status():
+        return (sessions.find_live(session_id) or {}).get("status") or "stopped"
+
+    for _ in range(TURN_GRACE_POLLS):
+        if status() in ("busy", "stopped"):
+            break
+        sleep(TURN_POLL_SEC)
+    for _ in range(timeout_polls):
+        if status() != "busy":
+            return
+        sleep(TURN_POLL_SEC)
+    raise SystemExit(f"session {session_id} is still mid-turn; gave up waiting")
 
 
 def wait_for(api, tid: str, states: set[str], timeout: int, poll: float = POLL_SEC, sleep=time.sleep) -> dict:
@@ -44,7 +116,7 @@ def keys_dir() -> Path:
 
 
 def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = False, file_history: bool = True,
-         wait: bool = True, keys: Path | None = None, sleep=time.sleep) -> dict:
+         wait: bool = True, keys: Path | None = None, sleep=time.sleep, on_launch=None) -> dict:
     keys = keys or keys_dir()
     with tempfile.TemporaryDirectory(prefix="ctransfer-push-") as tmp:
         key = Path(tmp) / "key"
@@ -66,6 +138,8 @@ def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = 
         net.post_file(created["upload"], path)
     api.call("POST", f"/sessions/{tid}/launch")
     _print(f"launched transfer {tid}")
+    if on_launch:
+        on_launch(tid)
     return wait_for(api, tid, {"running"}, timeout=25 * 60, sleep=sleep) if wait else api.call("GET", f"/sessions/{tid}")
 
 
@@ -89,6 +163,7 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
 def cmd_pull(args) -> None:
     result = pull(api_mod.Api.from_config(), args.transfer_id, home=sessions.claude_home(), force=args.force,
                   as_fork=args.as_fork, stash=args.stash)
+    clear_markers(args.transfer_id)
     _report_pull(result)
 
 
@@ -101,7 +176,21 @@ def cmd_apply(args) -> None:
 def _report_pull(result: dict) -> None:
     if result["backup"]:
         _print(f"previous local state backed up to {result['backup']}")
-    _print(f"pulled. continue with:  claude --resume {result['session_id']}")
+    _print(f"pulled. continue with:  ctransfer resume {result['session_id']}")
+
+
+RETURN_NOTE = (
+    "This session was just brought back from a cloud VM to the user's laptop by ctransfer. The transfer is "
+    "complete: you are running locally again, in the original project directory, which now holds the work done "
+    "on the VM. Any earlier request in this conversation to pull or bring the session back has already been "
+    "carried out; do not repeat it.")
+
+
+def cmd_resume(args) -> None:
+    """claude --resume, told the session is back from the cloud (the counterpart of the VM's arrival note)."""
+    if not sessions.find_transcript(args.session_id):
+        raise SystemExit(f"no local transcript for session {args.session_id}; pull it first")
+    os.execvp("claude", ["claude", "--resume", args.session_id, "--append-system-prompt", RETURN_NOTE])
 
 
 def cmd_configure(args) -> None:
@@ -143,30 +232,70 @@ def cmd_token(args) -> None:
 
 
 def cmd_discover(args) -> None:
-    info = sessions.discover(session_id=args.session, cwd=args.cwd)
+    info = discover(args)
     print(json.dumps({"session_id": info.session_id, "cwd": info.cwd, "status": info.status,
                       "transcript": str(info.transcript), "pid": (info.live or {}).get("pid")}, indent=2))
 
 
 def cmd_bundle(args) -> None:
-    info = sessions.discover(session_id=args.session, cwd=args.cwd)
+    info = discover(args)
     m = bundle.build(args.out, kind="push", home=sessions.claude_home(), session_id=info.session_id,
                      project_dir=info.project_dir, cwd=info.cwd, include_config=True, include_agent=True)
     print(json.dumps(m, indent=2))
 
 
 def cmd_push(args) -> None:
-    info = sessions.discover(session_id=args.session, cwd=args.cwd)
-    if info.status == "busy" and not args.allow_busy:
-        raise SystemExit(f"session {info.session_id} is mid-turn; wait for it to go idle (or pass --allow-busy)")
-    item = push(api_mod.Api.from_config(), info, home=sessions.claude_home(), remote_control=args.remote_control,
-                file_history=not args.no_file_history, wait=not args.no_wait)
+    # The transcript may not exist until the invoking turn ends (/ctransfer as a session's first prompt),
+    # so detached and --when-idle pushes resolve just the id up front and read the session afterwards.
+    sid = requested_session_id(args) or discover(args).session_id
+    if args.detach:
+        return _detach_push(args, sid)
+    track = (lambda **kw: write_marker(sid, **kw)) if args.track else (lambda **kw: None)
+    try:
+        if args.when_idle:
+            _print(f"waiting for session {sid} to finish its turn")
+            wait_turn_end(sid)
+        info = sessions.discover(session_id=sid)
+        if info.status == "busy" and not (args.allow_busy or args.when_idle):
+            raise SystemExit(f"session {sid} is mid-turn; wait for it to go idle (or pass --allow-busy/--when-idle)")
+        track(state="pushing")
+        item = push(api_mod.Api.from_config(), info, home=sessions.claude_home(), remote_control=args.remote_control,
+                    file_history=not args.no_file_history, wait=not args.no_wait,
+                    on_launch=lambda tid: track(state="launching", transfer_id=tid))
+    except BaseException as e:
+        track(state="failed", error=str(e) or type(e).__name__)
+        raise
     tid = item["transfer_id"]
+    track(state="running" if item["state"] == "running" else "launching", transfer_id=tid)
     where = "is running in the cloud" if item["state"] == "running" else f"is {item['state']} in the cloud"
-    _print(f"\nsession {info.session_id} {where} as transfer {tid}")
+    _print(f"\nsession {sid} {where} as transfer {tid}")
     if info.live:
         _print("exit the local session now (/exit): continuing locally will diverge from the cloud copy")
     _print(f"attach:   ctransfer ssh {tid}\nbring back: ctransfer pull {tid}")
+
+
+def _detach_push(args, sid: str) -> None:
+    """Re-run this push as a background worker (it outlives the caller's shell), logging to a file."""
+    api_mod.Api.from_config()  # fail now, not after the wait, if the control plane isn't configured
+    active = read_marker(sid)
+    if active and active.get("state") in ACTIVE_STATES:
+        raise SystemExit(f"a push of session {sid} is already {active['state']} (see ctransfer status --current)")
+    log = api_mod.CONFIG_PATH.parent / "logs" / f"{sid}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "ctransfer.cli", "push", "--session", sid, "--track"]
+    for flag in ("remote_control", "no_file_history", "allow_busy", "no_wait", "when_idle"):
+        if getattr(args, flag):
+            cmd.append("--" + flag.replace("_", "-"))
+    marker_path(sid).unlink(missing_ok=True)
+    write_marker(sid, state="queued", session_id=sid, cwd=os.getcwd(), log=str(log))
+    with open(log, "ab") as out:
+        out.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(cmd[1:])}\n".encode())
+        out.flush()
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    write_marker(sid, pid=proc.pid)
+    when = "once its current turn ends" if args.when_idle else "now"
+    print(f"queued push of session {sid}; it starts {when}.\nprogress: ctransfer status --current  (log: {log})")
 
 
 def cmd_ls(args) -> None:
@@ -176,9 +305,33 @@ def cmd_ls(args) -> None:
 
 
 def cmd_status(args) -> None:
+    if not args.transfer_id:
+        return _status_current()
     item = api_mod.Api.from_config().call("GET", f"/sessions/{args.transfer_id}")
     item.pop("download_url", None)
     print(json.dumps(item, indent=2))
+
+
+def _status_current() -> None:
+    """The detached push of the invoking session: its marker, the cloud state, and the log tail."""
+    sid = sessions.current_session_id()
+    if not sid:
+        raise SystemExit("not running inside a Claude Code session; pass a transfer id")
+    marker = read_marker(sid)
+    if not marker:
+        raise SystemExit(f"no ctransfer push recorded for session {sid}")
+    if marker.get("transfer_id"):
+        try:
+            marker["cloud_state"] = api_mod.Api.from_config().call("GET", f"/sessions/{marker['transfer_id']}")["state"]
+        except (SystemExit, Exception) as e:  # not configured, no credentials, network: the marker still helps
+            marker["cloud_state"] = f"unknown ({e})"
+    print(json.dumps(marker, indent=2))
+    try:
+        tail = Path(marker["log"]).read_text().splitlines()[-10:]
+    except (KeyError, OSError):
+        tail = []
+    if tail:
+        print("\n".join(["", "log:", *tail]))
 
 
 def cmd_ssh(args) -> None:
@@ -209,7 +362,9 @@ def cmd_usage(args) -> None:
 
 
 def cmd_rm(args) -> None:
-    print(json.dumps(api_mod.Api.from_config().call("DELETE", f"/sessions/{args.transfer_id}"), indent=2))
+    out = api_mod.Api.from_config().call("DELETE", f"/sessions/{args.transfer_id}")
+    clear_markers(args.transfer_id)
+    print(json.dumps(out, indent=2))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -230,6 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
     def session_args(p):
         p.add_argument("--session", help="session id (default: newest session for --cwd)")
         p.add_argument("--cwd", help="project directory (default: current directory)")
+        p.add_argument("--current", action="store_true", help="the Claude Code session running this command")
 
     p = sub.add_parser("discover", help="show which local session would be pushed")
     session_args(p)
@@ -246,6 +402,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-file-history", action="store_true", help="skip /rewind checkpoints")
     p.add_argument("--allow-busy", action="store_true", help="push even if the session is mid-turn")
     p.add_argument("--no-wait", action="store_true")
+    p.add_argument("--when-idle", action="store_true", help="wait for the session's current turn to end, then push")
+    p.add_argument("--detach", action="store_true", help="push from a background worker; log under ~/.config/ctransfer/logs")
+    p.add_argument("--track", action="store_true", help=argparse.SUPPRESS)  # set on the detached worker
     p.set_defaults(fn=cmd_push)
 
     def overwrite_args(p):
@@ -265,13 +424,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("usage", help="this month's VM-hours and transfer volume").set_defaults(fn=cmd_usage)
 
+    p = sub.add_parser("resume", help="continue a pulled session locally (claude --resume, told it is back)")
+    p.add_argument("session_id")
+    p.set_defaults(fn=cmd_resume)
+
     p = sub.add_parser("ls", help="list transfers")
     p.set_defaults(fn=cmd_ls)
 
     for name, fn, help_ in (("status", cmd_status, "show one transfer"), ("ssh", cmd_ssh, "attach to the VM's claude tmux session"),
                             ("rm", cmd_rm, "delete a transfer's VM")):
         p = sub.add_parser(name, help=help_)
-        p.add_argument("transfer_id")
+        if name == "status":  # no id: the push of the invoking Claude Code session
+            p.add_argument("transfer_id", nargs="?")
+            p.add_argument("--current", action="store_true", help="the Claude Code session running this command (default)")
+        else:
+            p.add_argument("transfer_id")
         if name == "ssh":
             p.add_argument("command", nargs="?", help="run this instead of attaching to tmux")
         p.set_defaults(fn=fn)
