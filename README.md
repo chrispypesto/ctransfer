@@ -1,0 +1,73 @@
+# ctransfer
+
+Move a live Claude Code session from your laptop to a cloud VM, keep working there, and pull it back. The transfer is verbatim: the transcript, `/rewind` checkpoints, project memory, and the workspace, including uncommitted and untracked changes.
+
+This repo has the client (the `ctransfer` CLI and the agent it ships to the VM) and the `/ctransfer` Claude Code plugin. The client talks to a control plane (AWS Lambda, DynamoDB, S3, SSM, Lightsail) that you deploy in your own AWS account. The control plane's code and Terraform aren't published yet.
+
+## Install
+
+```bash
+conda create -y -n ctransfer python=3.12
+conda run -n ctransfer pip install "git+https://github.com/chrispypesto/ctransfer.git"
+conda run -n ctransfer ctransfer configure --api-url <control plane api_url> --region <region> [--profile <aws profile>]
+```
+
+Your AWS identity needs `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the control plane's API function, plus `lightsail:GetInstance` and `lightsail:DownloadDefaultKeyPair` for `ctransfer ssh`.
+
+## `/ctransfer` in Claude Code
+
+```
+/plugin marketplace add chrispypesto/ctransfer
+/plugin install ctransfer@ctransfer
+```
+
+The plugin needs the CLI installed. It looks for it on `PATH`, then in a conda env named `ctransfer`, then at `$CTRANSFER_BIN`, and prints the install steps if it finds none.
+
+| Command | Does |
+|---|---|
+| `/ctransfer [--remote-control] [--no-file-history]` | push **this** session once it is idle |
+| `/ctransfer status [id]` | this session's push (state, cloud state, log tail), or one transfer |
+| `/ctransfer ls`, `pull <id>`, `rm <id>` | same as the CLI |
+
+What `/ctransfer` does:
+1. It queues a background `ctransfer push --current --when-idle`. `--current` resolves the session from `CLAUDE_CODE_SESSION_ID`, so it pushes this exact session, not the newest one in the directory.
+2. The plugin's `UserPromptSubmit` hook then blocks the `/ctransfer` prompt itself. The skill's shell block runs before the hook, so the push is already queued. Blocking the prompt means no turn runs and the pushed transcript ends at your previous turn.
+3. From then on, every prompt you send in that session is blocked, and the hook shows the push's progress instead (the worker logs to `~/.config/ctransfer/logs/<session>.log`). `/exit` once it says running. If the push fails, that is reported once and the session stays local.
+4. The VM's `claude` runs with an appended system prompt that says the transfer is complete, so it doesn't repeat the handoff.
+
+`ssh` needs a real terminal, so run `ctransfer ssh <id>` outside Claude Code. For `pull`, `/exit` the pushed session first, then run `/ctransfer pull <id>` from a new session in the same directory, or `ctransfer pull <id>` from a terminal.
+
+## CLI
+
+```bash
+ctransfer discover                 # which session would be pushed (newest one for this directory)
+ctransfer push [--remote-control]  # bundle, upload, launch, wait until the VM is running
+#   then /exit the local session: continuing locally makes the two copies diverge
+ctransfer ssh <transfer-id>        # attach to the VM's `claude` tmux session (Ctrl-b d to detach)
+ctransfer ls | status <id>
+ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
+claude --resume <session-id>       # carry on locally
+```
+
+`push --current` targets the Claude Code session running the command. `push --when-idle --detach` waits for that session's turn to end in a background worker, which is what `/ctransfer` uses.
+
+`pull` refuses to run, and changes nothing, when:
+- the session is open locally;
+- the local transcript has records the cloud copy lacks (`--force` overwrites them, `--as-fork` pulls into a new session id instead);
+- the local workspace has uncommitted changes (`--stash` stashes them) or its branch diverged (`--force`).
+
+Untracked credential-looking files (`.env`, `*.pem`, `id_rsa*`, `*.tfvars`, …) are never uploaded. Pull leaves them alone.
+
+## Layout
+
+- `src/ctransfer/`: the package. `sessions`, `workspace`, `bundle`, `net` and `agent` are standard-library only, because they ship to the VM inside each bundle.
+- `plugin/`: the Claude Code plugin (`/ctransfer` skill, dispatcher script, prompt guard hook). `.claude-plugin/marketplace.json` publishes it.
+- `tests/`: client and plugin tests, all on real logic. Tests that need the control plane live with it.
+
+## Development
+
+```bash
+conda env create -f environment.yml && conda activate ctransfer
+make test
+claude --plugin-dir plugin   # try the plugin from this checkout
+```
