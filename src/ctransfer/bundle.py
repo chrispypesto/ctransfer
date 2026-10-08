@@ -2,7 +2,8 @@
 
 Layout of a bundle (.tgz):
     manifest.json
-    claude/projects/<project-dir>/<session-id>.jsonl   transcript (plus memory/ and subagent dirs)
+    claude/projects/<project-dir>/<session-id>.jsonl   transcript (plus memory/ and subagent dirs); none in a
+                                                       `new` bundle, or in an export of a never-prompted session
     claude/file-history/<session-id>/                  pre-edit file copies for /rewind
     claude/CLAUDE.md, settings.json, skills/, ...      user config (push only)
     workspace/                                         see workspace.capture
@@ -64,17 +65,20 @@ def build(
     include_config: bool = False,
     include_agent: bool = False,
     include_file_history: bool = True,
+    claude_version: str | None = None,
     extra: dict | None = None,
 ) -> dict:
     """Write a bundle for one session to out_path and return its manifest.
 
+    kind is push (an existing session), new (a session the VM starts fresh, so no transcript yet) or export.
+    claude_version is recorded when there is no transcript to read it from.
     workspace_dir is where the workspace is read from (defaults to cwd); record_root, if given,
     replaces the workspace root recorded in the manifest (the VM uses it to report the laptop path).
     """
     home = Path(home)
     proj = home / "projects" / project_dir
     transcript = proj / f"{session_id}.jsonl"
-    if not transcript.is_file():
+    if kind == "push" and not transcript.is_file():
         raise BundleError(f"transcript not found: {transcript}")
     skipped: list[str] = []
     with tempfile.TemporaryDirectory(prefix="ctransfer-") as tmp:
@@ -108,14 +112,15 @@ def build(
             ws["root"] = record_root
         _assert_clean(stage)
 
-        uuids = sessions.record_uuids(transcript)
+        has_transcript = transcript.is_file()
+        uuids = sessions.record_uuids(transcript) if has_transcript else []
         manifest = {
             "format": FORMAT,
             "kind": kind,
             "session_id": session_id,
             "cwd": cwd,
             "project_dir": project_dir,
-            "claude_version": sessions.transcript_version(transcript),
+            "claude_version": (sessions.transcript_version(transcript) if has_transcript else None) or claude_version,
             "record_count": len(uuids),
             "last_uuid": uuids[-1] if uuids else None,
             "extra_transcripts": [t.name for t in extra_transcripts],

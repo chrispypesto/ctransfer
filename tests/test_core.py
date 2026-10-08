@@ -147,3 +147,8 @@ def test_is_prefix():
     assert apply.is_prefix([], ["a"])
     assert not apply.is_prefix(["a", "x"], ["a", "b", "c"])
     assert not apply.is_prefix(["a", "b", "c"], ["a", "b"])
+
+
+def test_push_bundle_still_requires_a_transcript(tmp_path):
+    with pytest.raises(bundle.BundleError, match="transcript not found"):
+        bundle.build(tmp_path / "b.tgz", kind="push", home=tmp_path, session_id="s", project_dir="p", cwd=str(tmp_path))
