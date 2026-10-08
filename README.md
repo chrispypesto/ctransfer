@@ -74,4 +74,5 @@ Untracked credential-looking files (`.env`, `*.pem`, `id_rsa*`, `*.tfvars`, …)
 pip install -e '.[test]'     # any Python 3.10+ env; environment.yml is the conda equivalent
 make test
 claude --plugin-dir plugin   # try the plugin from this checkout
+make install-plugin          # or install it from this checkout; edits apply on /reload-plugins
 ```
