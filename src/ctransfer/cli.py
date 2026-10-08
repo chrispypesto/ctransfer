@@ -176,7 +176,10 @@ def cmd_apply(args) -> None:
 def _report_pull(result: dict) -> None:
     if result["backup"]:
         _print(f"previous local state backed up to {result['backup']}")
-    _print(f"pulled. continue with:  ctransfer resume {result['session_id']}")
+    if result["transcript"] is None:
+        _print("pulled the workspace; the cloud session was never prompted, so there is no conversation to resume")
+    else:
+        _print(f"pulled. continue with:  ctransfer resume {result['session_id']}")
 
 
 RETURN_NOTE = (

@@ -68,7 +68,8 @@ def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force:
 
     Every check runs before anything is written; the previous local state is backed up under
     ~/.claude/ctransfer-backups/<session>/<timestamp>/ and the old git HEAD under refs/ctransfer/backup/.
-    Returns {"session_id", "backup", "transcript"}.
+    Returns {"session_id", "backup", "transcript"}; transcript is None when the cloud session never recorded
+    one (a `ctransfer new` session nobody prompted), in which case only the workspace comes back.
     """
     bundle_dir = Path(bundle_dir)
     home = Path(home or sessions.claude_home())
@@ -80,7 +81,8 @@ def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force:
     live = sessions.find_live(sid, home)
     if live:
         raise ApplyError(f"session {sid} is open locally (pid {live['pid']}); exit it before pulling")
-    if local_transcript.exists() and not as_fork:
+    has_transcript = remote_transcript.is_file()
+    if has_transcript and local_transcript.exists() and not as_fork:
         local_ids, remote_ids = sessions.record_uuids(local_transcript), sessions.record_uuids(remote_transcript)
         if not is_prefix(local_ids, remote_ids) and not force:
             raise ApplyError(
@@ -95,6 +97,8 @@ def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force:
     backup = _backup(home, sid, project_dir)
     workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force)
 
+    if not has_transcript:
+        return {"session_id": sid, "backup": str(backup) if backup else None, "transcript": None}
     target_sid = str(uuid.uuid4()) if as_fork else sid
     data = remote_transcript.read_bytes()
     if as_fork:

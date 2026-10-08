@@ -149,6 +149,28 @@ def test_is_prefix():
     assert not apply.is_prefix(["a", "b", "c"], ["a", "b"])
 
 
+def test_export_of_a_never_prompted_session_pulls_only_the_workspace(tmp_path):
+    """A `ctransfer new` session nobody prompted has no transcript: pull brings back the VM's workspace and
+    writes no transcript."""
+    laptop_repo = make_repo(tmp_path / "laptop" / "proj")
+    vm_repo = tmp_path / "vm" / "proj"
+    run_git(tmp_path, "clone", "-q", str(laptop_repo), str(vm_repo))
+    (vm_repo / "app.py").write_text("print('edited on the vm')\n")
+    vm_home, laptop_home = tmp_path / "vm" / ".claude", tmp_path / "laptop" / ".claude"
+    vm_home.mkdir()
+    sid = "6f1d2c3b-0a9e-4b8c-8d7f-1e2a3b4c5d6e"
+    out = tmp_path / "export.tgz"
+    m = bundle.build(out, kind="export", home=vm_home, session_id=sid, project_dir=sessions.encode_project_dir(str(laptop_repo)),
+                     cwd=str(laptop_repo), workspace_dir=str(vm_repo), record_root=str(laptop_repo))
+    assert m["record_count"] == 0
+    manifest = bundle.extract(out, tmp_path / "x")
+
+    result = apply.apply_export(tmp_path / "x", manifest, home=laptop_home)
+    assert result["transcript"] is None and result["session_id"] == sid
+    assert (laptop_repo / "app.py").read_text() == "print('edited on the vm')\n"
+    assert not (laptop_home / "projects").exists()
+
+
 def test_push_bundle_still_requires_a_transcript(tmp_path):
     with pytest.raises(bundle.BundleError, match="transcript not found"):
         bundle.build(tmp_path / "b.tgz", kind="push", home=tmp_path, session_id="s", project_dir="p", cwd=str(tmp_path))
