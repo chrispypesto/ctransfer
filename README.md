@@ -86,7 +86,7 @@ How a run works:
 - Every run forks the same snapshot, so runs never add to each other's context and the session stays the size it was when you pushed it. To keep some continuity, each run's system prompt includes short summaries of the last five runs (400 characters each, about 2 KB in all).
 - Edits on the VM are thrown away when the run ends unless the task commits and pushes them.
 - Runs can't ask for permission. `--permission-mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`) sets the mode. With `default`, the allow rules in your `settings.json` apply, and `cron logs` shows how many tool calls were denied.
-- `--timeout` (default and maximum 30 minutes) bounds each run.
+- `--timeout` bounds each run (default and maximum: the free tier's run limit, 30 minutes on the hosted control plane).
 - Runs count against the free tier like pushes do: launches per day, VM-hours, and the one VM at a time. A run that a limit refuses shows as `refused` in `cron logs`.
 - A run doesn't start while the previous one is still going.
 

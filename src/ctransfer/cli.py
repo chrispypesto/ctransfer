@@ -461,7 +461,7 @@ def cmd_rm(args) -> None:
 
 # ---- cron: scheduled runs of a pushed session ---------------------------------------------------
 
-def cron_add(api, info: sessions.SessionInfo, *, home: Path, schedule: str, prompt: str, timeout_min: int = 30,
+def cron_add(api, info: sessions.SessionInfo, *, home: Path, schedule: str, prompt: str, timeout_min: int | None = None,
              permission_mode: str = "default", file_history: bool = False) -> dict:
     """Upload the session as the schedule's template: every run starts from this snapshot, in a fork."""
     with tempfile.TemporaryDirectory(prefix="ctransfer-cron-") as tmp:
@@ -557,7 +557,7 @@ def add_cron_parser(sub, session_args) -> None:
     p.add_argument("--schedule", required=True, help="5-field cron expression in UTC, at most hourly, e.g. '0 9 * * 1-5'")
     p.add_argument("--prompt", help="the task each run performs")
     p.add_argument("--prompt-file", help="read the task from this file")
-    p.add_argument("--timeout", type=int, default=30, help="minutes a run may take (default 30)")
+    p.add_argument("--timeout", type=int, help="minutes a run may take (default: the free tier's maximum)")
     p.add_argument("--permission-mode", default="default", choices=("default", "acceptEdits", "plan", "bypassPermissions"),
                    help="claude --permission-mode for runs (default: the session's own settings apply)")
     p.add_argument("--file-history", action="store_true", help="include /rewind checkpoints in the snapshot")
