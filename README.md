@@ -15,6 +15,8 @@ ctransfer login                            # GitHub device flow
 claude setup-token | ctransfer token set   # the Claude token your VMs run on
 ```
 
+From a checkout, `make install` installs it into the active environment's Python (`make install PYTHON=/path/to/python` picks another).
+
 No AWS credentials are needed. `ctransfer ssh` uses a key that `push` generates for each transfer (`~/.config/ctransfer/keys/<id>`), so it works from the machine that pushed. `ctransfer usage` shows your free-tier usage.
 
 ## `/ctransfer` in Claude Code
