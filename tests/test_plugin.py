@@ -128,9 +128,39 @@ def test_manifests_point_at_real_files():
 
     skill = (plugin_dir / "skills" / "ctransfer" / "SKILL.md").read_text()
     assert skill.startswith("---\nname: ctransfer\n")  # a skill, so the bare /ctransfer resolves
-    assert '"${CLAUDE_PLUGIN_ROOT}/scripts/ctransfer.sh" $ARGUMENTS' in skill
+    assert '"${CLAUDE_PLUGIN_ROOT}/scripts/ctransfer.sh" --stdin <<' in skill_command("")
     hooks = json.loads((plugin_dir / "hooks" / "hooks.json").read_text())
     hook_cmd = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     assert "${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh" in hook_cmd
     for script in (DISPATCH, plugin_dir / "hooks" / "guard.sh"):
         assert os.access(script, os.X_OK)
+
+
+def skill_command(arguments: str) -> str:
+    """The skill's ```! block as Claude Code runs it: $ARGUMENTS replaced by the raw text typed after /ctransfer."""
+    skill = (PLUGIN / "skills" / "ctransfer" / "SKILL.md").read_text()
+    block = skill.split("```!\n", 1)[1].split("```", 1)[0]
+    return block.replace("$ARGUMENTS", arguments)
+
+
+def test_dispatcher_starts_a_new_cloud_session_with_the_prompt_verbatim(cli_env, laptop):
+    """/ctransfer new: the skill hands the arguments over untouched by shell quoting or expansion, the
+    dispatcher maps them onto `ctransfer new --detach`, and the background worker gets the prompt intact.
+    The control plane is unreachable, so the worker fails after building the bundle."""
+    configure_signed_in()
+    out = run(["bash", "-c", skill_command("new --remote-control don't \"break\" $HOME `x`")],
+              {**cli_env, "CLAUDE_CONFIG_DIR": str(laptop["home"]), "CLAUDE_PLUGIN_ROOT": str(PLUGIN)})
+    assert out.returncode == 0 and "starting new cloud session" in out.stdout, out.stdout
+    log = Path(out.stdout.split("progress: ")[1].split()[0])
+    deadline = time.time() + 30
+    while "error" not in (log.read_text() if log.exists() else "") and time.time() < deadline:
+        time.sleep(0.2)
+    header = log.read_text().splitlines()[1]
+    assert f"--cwd {ROOT}" in header and "--remote-control" in header
+    assert header.endswith("-- don't \"break\" $HOME `x`")
+    assert cli.read_marker("s1") is None  # the invoking session is not being pushed: the guard leaves it alone
+
+
+def test_skill_passes_other_commands_through(cli_env):
+    out = run(["bash", "-c", skill_command("status")], {**cli_env, "CLAUDE_PLUGIN_ROOT": str(PLUGIN)})
+    assert out.returncode == 1 and "no ctransfer push recorded for session s1" in out.stdout

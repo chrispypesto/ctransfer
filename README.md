@@ -30,6 +30,7 @@ The plugin needs the CLI installed. It runs `$CTRANSFER_BIN` if set, otherwise `
 | Command | Does |
 |---|---|
 | `/ctransfer [--remote-control] [--no-file-history]` | push **this** session once it is idle |
+| `/ctransfer new [--remote-control] [prompt]` | start a **new** session on a cloud VM in a copy of this project; this session carries on |
 | `/ctransfer status [id]` | this session's push (state, cloud state, log tail), or one transfer |
 | `/ctransfer ls`, `pull <id>`, `rm <id>` | same as the CLI |
 
@@ -38,6 +39,8 @@ What `/ctransfer` does:
 2. The plugin's `UserPromptSubmit` hook then blocks the `/ctransfer` prompt itself. The skill's shell block runs before the hook, so the push is already queued. Blocking the prompt means no turn runs and the pushed transcript ends at your previous turn.
 3. From then on, every prompt you send in that session is blocked, and the hook shows the push's progress instead (the worker logs to `~/.config/ctransfer/logs/<session>.log`). `/exit` once it says running. If the push fails, that is reported once and the session stays local.
 4. The VM's `claude` runs with an appended system prompt that says the transfer is complete, so it doesn't repeat the handoff.
+
+`/ctransfer new` runs `ctransfer new --detach` in the background (log in `~/.config/ctransfer/logs/<new-session>.log`) and doesn't touch the session you typed it in. The prompt is passed through as typed, quotes and all. `/ctransfer ls` shows the new transfer.
 
 `ssh` and `resume` need a real terminal, so run them outside Claude Code. For `pull`, `/exit` the pushed session first, then run `/ctransfer pull <id>` from a new session in the same directory, or `ctransfer pull <id>` from a terminal. Then continue with `ctransfer resume <session-id>`: it runs `claude --resume` with an appended system prompt saying the session is back on the laptop, the counterpart of the VM's arrival note.
 
