@@ -10,6 +10,8 @@ from pathlib import Path
 from . import net
 
 CONFIG_PATH = Path(os.environ.get("CTRANSFER_CONFIG") or Path.home() / ".config" / "ctransfer" / "config.json")
+# The hosted control plane. `ctransfer configure --api-url` or CTRANSFER_API_URL points at another deployment.
+DEFAULT_API_URL = "https://api.ctransfer.itschrispy.com"
 
 
 def load_config() -> dict:
@@ -33,11 +35,9 @@ class Api:
     @classmethod
     def from_config(cls, *, signed_in: bool = True) -> "Api":
         cfg = load_config()
-        if not cfg.get("api_url"):
-            raise SystemExit("not configured: run `ctransfer configure --api-url <terraform output api_url>`")
         if signed_in and not cfg.get("token"):
             raise SystemExit("not signed in: run `ctransfer login`")
-        return cls(cfg["api_url"], cfg.get("token"))
+        return cls(cfg.get("api_url") or DEFAULT_API_URL, cfg.get("token"))
 
     def call(self, method: str, path: str, body: dict | None = None) -> dict:
         headers = {"authorization": f"Bearer {self.token}"} if self.token else {}

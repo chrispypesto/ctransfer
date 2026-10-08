@@ -39,13 +39,13 @@ def test_dispatcher_status_reports_this_sessions_push(cli_env):
     cli.write_marker("s1", state="launching", transfer_id="t9")
     out = run(["bash", str(DISPATCH), "status"], cli_env)
     report = json.loads(out.stdout)
-    assert report["transfer_id"] == "t9" and report["cloud_state"].startswith("unknown (not configured")
+    assert report["transfer_id"] == "t9" and report["cloud_state"].startswith("unknown (not signed in")
 
 
 def test_dispatcher_passes_other_commands_to_cli(cli_env, laptop):
     for args in (["status", "abc"], ["ls"], ["pull", "abc", "--force"], ["rm", "abc"]):
         out = run(["bash", str(DISPATCH), *args], cli_env)
-        assert out.returncode == 1 and "not configured" in out.stdout, (args, out.stdout)
+        assert out.returncode == 1 and "not signed in" in out.stdout, (args, out.stdout)
     out = run(["bash", str(DISPATCH), "pull"], cli_env)
     assert out.returncode == 2 and "transfer_id" in out.stdout
     out = run(["bash", str(DISPATCH), "discover"], {**cli_env, "CLAUDE_CONFIG_DIR": str(laptop["home"]),

@@ -323,7 +323,7 @@ def _status_current() -> None:
     if marker.get("transfer_id"):
         try:
             marker["cloud_state"] = api_mod.Api.from_config().call("GET", f"/sessions/{marker['transfer_id']}")["state"]
-        except (SystemExit, Exception) as e:  # not configured, no credentials, network: the marker still helps
+        except (SystemExit, Exception) as e:  # not signed in, network: the marker still helps
             marker["cloud_state"] = f"unknown ({e})"
     print(json.dumps(marker, indent=2))
     try:
@@ -371,7 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ctransfer", description="Move a Claude Code session to a cloud VM and back.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("configure", help="save control-plane settings")
+    p = sub.add_parser("configure", help="point at another control plane (default: the hosted one)")
     p.add_argument("--api-url")
     p.set_defaults(fn=cmd_configure)
 

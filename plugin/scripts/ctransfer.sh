@@ -9,9 +9,8 @@ if [ -z "$bin" ]; then
   cat <<'MSG'
 ctransfer CLI not found. Install it into any Python 3.10+ environment, then retry /ctransfer:
   pip install "git+https://github.com/chrispypesto/ctransfer.git"   # or pipx / uv tool install
-  ctransfer configure --api-url <your control plane api_url> && ctransfer login
+  ctransfer login
 Claude Code finds it on PATH, or at $CTRANSFER_BIN (path to the ctransfer executable).
-ctransfer also needs its control plane deployed: see the ctransfer README.
 MSG
   exit 1
 fi
