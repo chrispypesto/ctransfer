@@ -9,6 +9,10 @@ in tmux, and install a systemd unit for `run`.
 export is requested, wait for a turn boundary, stop claude, bundle the transcript + workspace
 and upload it.
 
+Scheduled runs (boot["run"] set, see `ctransfer cron`) start no interactive session: one headless
+`claude -p` turn on a fork of the pushed session, after which the agent reports "done" and the
+control plane asks for the export, which carries the fork's transcript and the run's result.
+
 Standard library only: this file ships inside every bundle and runs on a stock Ubuntu image.
 """
 
@@ -32,6 +36,7 @@ AGENT_DIR = Path("/opt/ctransfer/agent")
 TMUX_SESSION = "claude"
 HEARTBEAT_SEC = 60
 EXPORT_WAIT_SEC = 1800
+RESULT_TEXT_MAX = 8000  # chars of the run's final message reported to the control plane
 
 UNIT = """[Unit]
 Description=ctransfer session agent
@@ -116,10 +121,15 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
         "agent_token": boot["agent_token"], "cwd": cwd, "vm_cwd": vm_cwd, "root": ws["root"],
         "vm_root": str(vm_root), "project_dir": manifest["project_dir"], "claude_home": str(claude_dir),
         "user": user, "restored_at": time.time(), "new": manifest["kind"] == "new",
+        "run": boot.get("run"),  # a scheduled run's task, else None
     }
     if launch:
         _install_claude(user, boot.get("claude_version"))
-        _launch(state, home, boot["claude_token"], bool(boot.get("remote_control")), manifest.get("prompt"))
+        if boot.get("run"):
+            state["workspace_update"] = _update_workspace(state, ws)
+            _launch_run(state, home, boot["claude_token"], boot["run"])
+        else:
+            _launch(state, home, boot["claude_token"], bool(boot.get("remote_control")), manifest.get("prompt"))
     return state
 
 
@@ -156,23 +166,92 @@ def claude_args(state: dict, *, remote_control: bool = False, prompt: str | None
     return args + [prompt] if prompt else args
 
 
-def _launch(state: dict, home: Path, claude_token: str, remote_control: bool, prompt: str | None = None) -> None:
+def _write_launcher(state: dict, home: Path, claude_token: str, body: str) -> Path:
+    """~/.ctransfer/launch.sh: loads the Claude token from ~/.ctransfer/env, cds to the session's cwd, runs body."""
     ctl = home / ".ctransfer"
     ctl.mkdir(mode=0o700, exist_ok=True)
     env_file = ctl / "env"
     env_file.write_text(f"CLAUDE_CODE_OAUTH_TOKEN={claude_token}\n")
     env_file.chmod(0o600)
-    args = claude_args(state, remote_control=remote_control, prompt=prompt)
     launcher = ctl / "launch.sh"
-    launcher.write_text(
-        "#!/bin/bash\nset -a; . \"$HOME/.ctransfer/env\"; set +a\n"
-        f"cd {json.dumps(state['vm_cwd'])}\n"
-        f"exec \"$HOME/.local/bin/claude\" {shlex.join(args)}\n"
-    )
+    launcher.write_text("#!/bin/bash\nset -a; . \"$HOME/.ctransfer/env\"; set +a\n"
+                        f"cd {json.dumps(state['vm_cwd'])}\n{body}\n")
     launcher.chmod(0o700)
+    return launcher
+
+
+def _start_in_tmux(state: dict, home: Path, launcher: Path) -> None:
     if state["user"]:
-        subprocess.run(["chown", "-R", f"{state['user']}:{state['user']}", str(ctl)], check=True)
+        subprocess.run(["chown", "-R", f"{state['user']}:{state['user']}", str(home / ".ctransfer")], check=True)
     subprocess.run(_as_user(state["user"], f"tmux new-session -d -s {TMUX_SESSION} -x 220 -y 50 {launcher}"), check=True)
+
+
+def _launch(state: dict, home: Path, claude_token: str, remote_control: bool, prompt: str | None = None) -> None:
+    args = claude_args(state, remote_control=remote_control, prompt=prompt)
+    launcher = _write_launcher(state, home, claude_token, f"exec \"$HOME/.local/bin/claude\" {shlex.join(args)}")
+    _start_in_tmux(state, home, launcher)
+
+
+def run_dir(home: Path) -> Path:
+    """Where a scheduled run's claude writes its JSON result, stderr and exit code."""
+    return home / ".ctransfer" / "run"
+
+
+def _launch_run(state: dict, home: Path, claude_token: str, run: dict) -> None:
+    """One headless turn on a fork of the pushed session: --fork-session writes the turn to a new transcript, so
+    the pushed one (every run's starting point) never grows. A coreutils timeout bounds the run."""
+    out = run_dir(home)
+    out.mkdir(parents=True, exist_ok=True)
+    claude = " ".join([
+        f"timeout --kill-after=30 {int(run['timeout_sec'])}", "\"$HOME/.local/bin/claude\"",
+        "-p", shlex.quote(run["prompt"]), "--resume", state["session_id"], "--fork-session",
+        "--output-format", "json", "--permission-mode", shlex.quote(run.get("permission_mode") or "default"),
+        "--append-system-prompt", shlex.quote(run["note"])])
+    launcher = _write_launcher(state, home, claude_token,
+                               f"{claude} > \"$HOME/.ctransfer/run/result.json\" 2> \"$HOME/.ctransfer/run/stderr.log\"\n"
+                               "echo $? > \"$HOME/.ctransfer/run/exit_code\"")
+    _start_in_tmux(state, home, launcher)
+
+
+def _update_workspace(state: dict, ws: dict) -> str:
+    """Fast-forward the pushed branch from its remote (origin, else the first one), so a run sees what landed since
+    the push. Best effort: the VM has no git credentials, so private remotes stay at the pushed snapshot."""
+    remotes = sorted(ws.get("remotes") or {}, key=lambda name: name != "origin")
+    if ws.get("kind") != "git" or not ws.get("branch") or not remotes:
+        return "not updated: no branch with a remote"
+    cmd = (f"GIT_TERMINAL_PROMPT=0 git -C {shlex.quote(state['vm_root'])} pull --ff-only --quiet "
+           f"{shlex.quote(remotes[0])} {shlex.quote(ws['branch'])}")
+    try:
+        out = subprocess.run(_as_user(state["user"], cmd), capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return "not updated: git pull timed out"
+    if out.returncode:
+        return "not updated: " + (out.stderr.strip().splitlines() or ["git pull failed"])[-1][:200]
+    return f"fast-forwarded from {remotes[0]}/{ws['branch']}"
+
+
+def run_result(home: Path) -> dict:
+    """What a finished run reports: claude's JSON result (trimmed), or why there is none."""
+    out = run_dir(home)
+    code = (out / "exit_code").read_text().strip() if (out / "exit_code").exists() else ""
+    result: dict = {"exit_code": int(code) if code.lstrip("-").isdigit() else None}
+    try:
+        reply = json.loads((out / "result.json").read_text())
+    except (OSError, ValueError):
+        reply = {}
+    for key in ("session_id", "is_error", "subtype", "num_turns", "total_cost_usd", "duration_ms"):
+        if key in reply:
+            result[key] = reply[key]
+    result["text"] = str(reply.get("result") or "")[:RESULT_TEXT_MAX]
+    result["permission_denials"] = len(reply.get("permission_denials") or [])
+    if not reply or reply.get("is_error"):
+        try:
+            result["stderr"] = (out / "stderr.log").read_text()[-1000:]
+        except OSError:
+            pass
+        if result["exit_code"] == 124:
+            result["error"] = "timed out"
+    return result
 
 
 def install_service(state_path: Path) -> None:
@@ -195,11 +274,21 @@ class Agent:
         return net.request_json(url, body=body, headers={"authorization": f"Bearer {self.state['agent_token']}"})
 
     def _claude_status(self) -> str:
+        if self.state.get("run"):
+            return self._run_status()
         home = Path(self.state["claude_home"])
         for s in sessions.live_sessions(home):
             if s.get("sessionId") == self.state["session_id"] or s.get("cwd") == self.state["vm_cwd"]:
                 return s.get("status") or "idle"
         return "stopped"
+
+    def _run_status(self) -> str:
+        """busy while the headless run is going, then done (also when it died without writing an exit code)."""
+        if (run_dir(Path(self.state["claude_home"]).parent) / "exit_code").exists():
+            return "done"
+        alive = subprocess.run(_as_user(self.state["user"], f"tmux has-session -t {TMUX_SESSION}"),
+                               capture_output=True).returncode == 0
+        return "busy" if alive else "done"
 
     def _stop_claude(self) -> None:
         subprocess.run(_as_user(self.state["user"], f"tmux kill-session -t {TMUX_SESSION}"), check=False)
@@ -218,18 +307,26 @@ class Agent:
         st = self.state
         home = Path(st["claude_home"])
         proj = home / "projects" / st["project_dir"]
+        session_id, report = st["session_id"], {}
+        if st.get("run"):
+            # The run's turn lives in its fork; export that, so a pull brings back the run, not the template.
+            result = run_result(home.parent)
+            report = {"result": {**result, "workspace_update": st.get("workspace_update", "")}}
+            if result.get("session_id") and (proj / f"{result['session_id']}.jsonl").exists():
+                session_id = result["session_id"]
         extras = tuple(p for p in proj.glob("*.jsonl")
-                       if p.stem != st["session_id"] and p.stat().st_mtime > st["restored_at"])
+                       if p.stem != session_id and p.stat().st_mtime > st["restored_at"])
         workspace.GIT_EXTRA_CONFIG["safe.directory"] = "*"
         with tempfile.TemporaryDirectory(prefix="ctransfer-export-") as tmp:
             out = Path(tmp) / "export.tgz"
             manifest = bundle.build(
-                out, kind="export", home=home, session_id=st["session_id"], project_dir=st["project_dir"],
+                out, kind="export", home=home, session_id=session_id, project_dir=st["project_dir"],
                 cwd=st["cwd"], workspace_dir=st["vm_cwd"], record_root=st["root"], extra_transcripts=extras,
                 extra={"transfer_id": st["transfer_id"]},
             )
             self.upload(upload, out)
-        self.post("exported", {"export_key": export_key, "manifest": {k: manifest[k] for k in ("record_count", "last_uuid", "claude_version")}})
+        self.post("exported", {"export_key": export_key, **report,
+                               "manifest": {k: manifest[k] for k in ("record_count", "last_uuid", "claude_version")}})
         return manifest
 
     def run(self) -> None:

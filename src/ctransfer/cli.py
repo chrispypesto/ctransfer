@@ -117,6 +117,17 @@ def keys_dir() -> Path:
     return api_mod.CONFIG_PATH.parent / "keys"
 
 
+def build_push_bundle(path: Path, info: sessions.SessionInfo, *, home: Path, file_history: bool = True) -> dict:
+    """A schedule's template: the session, user config, workspace and the agent. Returns its manifest."""
+    manifest = bundle.build(path, kind="push", home=home, session_id=info.session_id, project_dir=info.project_dir,
+                            cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history)
+    for s in manifest["skipped"]:
+        _print(f"  skipped (looks like a credential): {s}")
+    _print(f"bundle: {path.stat().st_size / 1e6:.1f} MB, {manifest['record_count']} records, "
+           f"claude {manifest['claude_version']}")
+    return manifest
+
+
 def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = False, file_history: bool = True,
          wait: bool = True, keys: Path | None = None, sleep=time.sleep, on_launch=None) -> dict:
     def build(path: Path) -> dict:
@@ -448,6 +459,126 @@ def cmd_rm(args) -> None:
     print(json.dumps(out, indent=2))
 
 
+# ---- cron: scheduled runs of a pushed session ---------------------------------------------------
+
+def cron_add(api, info: sessions.SessionInfo, *, home: Path, schedule: str, prompt: str, timeout_min: int | None = None,
+             permission_mode: str = "default", file_history: bool = False) -> dict:
+    """Upload the session as the schedule's template: every run starts from this snapshot, in a fork."""
+    with tempfile.TemporaryDirectory(prefix="ctransfer-cron-") as tmp:
+        path = Path(tmp) / "template.tgz"
+        manifest = build_push_bundle(path, info, home=home, file_history=file_history)
+        created = api.call("POST", "/schedules", {
+            "session_id": info.session_id, "cwd": info.cwd, "claude_version": manifest["claude_version"],
+            "cron": schedule, "prompt": prompt, "timeout_min": timeout_min, "permission_mode": permission_mode})
+        net.post_file(created.pop("upload"), path)
+    return created
+
+
+def _utc(t: int | None) -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t)) if t else "-"
+
+
+def cmd_cron_add(args) -> None:
+    prompt = Path(args.prompt_file).read_text() if args.prompt_file else args.prompt
+    if not prompt:
+        raise SystemExit("give the task with --prompt or --prompt-file")
+    info = discover(args)
+    out = cron_add(api_mod.Api.from_config(), info, home=sessions.claude_home(), schedule=args.schedule,
+                   prompt=prompt, timeout_min=args.timeout, permission_mode=args.permission_mode,
+                   file_history=args.file_history)
+    _print(f"schedule {out['schedule_id']}: session {info.session_id} runs '{out['cron']}' (UTC); "
+           f"next run {_utc(out['next_run_at'])}\nrun now: ctransfer cron run {out['schedule_id']}   "
+           f"results: ctransfer cron logs {out['schedule_id']}")
+
+
+def cmd_cron_ls(args) -> None:
+    for s in api_mod.Api.from_config().call("GET", "/schedules")["schedules"]:
+        last = s.get("last_run") or {}
+        print(f"{s['schedule_id']}  {s['cron']:<15} next {_utc(s.get('next_run_at'))}  "
+              f"last {last.get('status', '-'):<9} {s['cwd']}  {s['prompt'][:50]!r}")
+
+
+def cmd_cron_run(args) -> None:
+    out = api_mod.Api.from_config().call("POST", f"/schedules/{args.schedule_id}/run")
+    print(json.dumps(out, indent=2))
+
+
+def _run_line(run: dict) -> str:
+    result = run.get("result") or {}
+    bits = [_utc(run.get("created_at")), run["status"], f"run {run['run_id']}"]
+    if result.get("duration_ms"):
+        bits.append(f"{result['duration_ms'] / 60000:.1f} min")
+    if result.get("total_cost_usd") is not None:
+        bits.append(f"${result['total_cost_usd']:.2f}")
+    if result.get("permission_denials"):
+        bits.append(f"{result['permission_denials']} permission denials")
+    return "  ".join(bits)
+
+
+def cmd_cron_logs(args) -> None:
+    sched = api_mod.Api.from_config().call("GET", f"/schedules/{args.schedule_id}")
+    print(f"schedule {sched['schedule_id']}  '{sched['cron']}' UTC  next {_utc(sched.get('next_run_at'))}\n"
+          f"task: {sched['prompt']}\n")
+    for run in sched["runs"][: args.n][::-1]:  # newest last, next to the prompt
+        result = run.get("result") or {}
+        print(_run_line(run))
+        for line in filter(None, [run.get("error"), result.get("error"), result.get("workspace_update")]):
+            print(f"  ({line})")
+        if result.get("text"):
+            print("  " + result["text"].replace("\n", "\n  "))
+        print()
+
+
+def cmd_cron_pull(args) -> None:
+    """A run's forked transcript as a local session to inspect or continue; the workspace is left alone."""
+    api = api_mod.Api.from_config()
+    item = api.call("GET", f"/sessions/{args.run_id}")
+    if item["state"] != "exported" or not item.get("download_url"):
+        raise SystemExit(f"run {args.run_id} has no transcript to pull (state {item['state']})")
+    with tempfile.TemporaryDirectory(prefix="ctransfer-pull-") as tmp:
+        path = Path(tmp) / "export.tgz"
+        net.get_file(item["download_url"], path)
+        manifest = bundle.extract(path, Path(tmp) / "x")
+        result = apply.apply_export(Path(tmp) / "x", manifest, home=sessions.claude_home(), workspace_too=False)
+    _print(f"pulled run {args.run_id} as session {result['session_id']} (workspace untouched)\n"
+           f"continue with:  claude --resume {result['session_id']}")
+
+
+def cmd_cron_rm(args) -> None:
+    print(json.dumps(api_mod.Api.from_config().call("DELETE", f"/schedules/{args.schedule_id}"), indent=2))
+
+
+def add_cron_parser(sub, session_args) -> None:
+    cron = sub.add_parser("cron", help="run a task on a schedule, each time in a fresh fork of a pushed session")
+    csub = cron.add_subparsers(dest="cron_cmd", required=True)
+
+    p = csub.add_parser("add", help="snapshot a session and run a task on it on a cron schedule (UTC)")
+    session_args(p)
+    p.add_argument("--schedule", required=True, help="5-field cron expression in UTC, at most hourly, e.g. '0 9 * * 1-5'")
+    p.add_argument("--prompt", help="the task each run performs")
+    p.add_argument("--prompt-file", help="read the task from this file")
+    p.add_argument("--timeout", type=int, help="minutes a run may take (default: the free tier's maximum)")
+    p.add_argument("--permission-mode", default="default", choices=("default", "acceptEdits", "plan", "bypassPermissions"),
+                   help="claude --permission-mode for runs (default: the session's own settings apply)")
+    p.add_argument("--file-history", action="store_true", help="include /rewind checkpoints in the snapshot")
+    p.set_defaults(fn=cmd_cron_add)
+
+    csub.add_parser("ls", help="list schedules").set_defaults(fn=cmd_cron_ls)
+    for name, fn, help_ in (("run", cmd_cron_run, "start a run now"), ("rm", cmd_cron_rm, "delete a schedule")):
+        p = csub.add_parser(name, help=help_)
+        p.add_argument("schedule_id")
+        p.set_defaults(fn=fn)
+
+    p = csub.add_parser("logs", help="recent runs and their results")
+    p.add_argument("schedule_id")
+    p.add_argument("-n", type=int, default=5, help="how many runs (default 5)")
+    p.set_defaults(fn=cmd_cron_logs)
+
+    p = csub.add_parser("pull", help="bring a run's transcript back as a new local session")
+    p.add_argument("run_id")
+    p.set_defaults(fn=cmd_cron_pull)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ctransfer", description="Move a Claude Code session to a cloud VM and back.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -532,6 +663,8 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "ssh":
             p.add_argument("command", nargs="?", help="run this instead of attaching to tmux")
         p.set_defaults(fn=fn)
+
+    add_cron_parser(sub, session_args)
     return ap
 
 

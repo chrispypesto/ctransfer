@@ -63,8 +63,9 @@ def _fork_records(data: bytes, old: str, new: str) -> bytes:
 
 
 def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force: bool = False,
-                 as_fork: bool = False, stash: bool = False) -> dict:
-    """Overwrite the local transcript, file-history, memory and workspace with the cloud copy.
+                 as_fork: bool = False, stash: bool = False, workspace_too: bool = True) -> dict:
+    """Overwrite the local transcript, file-history, memory and workspace (unless not workspace_too) with the
+    cloud copy.
 
     Every check runs before anything is written; the previous local state is backed up under
     ~/.claude/ctransfer-backups/<session>/<timestamp>/ and the old git HEAD under refs/ctransfer/backup/.
@@ -90,12 +91,15 @@ def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force:
                 "Pass --force to overwrite them (a backup is kept) or --as-fork to pull into a new session id.")
 
     ws = manifest["workspace"]
-    problems = workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force, dry_run=True)
-    if problems:
-        raise ApplyError("; ".join(problems))
+    if workspace_too:
+        problems = workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force,
+                                            dry_run=True)
+        if problems:
+            raise ApplyError("; ".join(problems))
 
     backup = _backup(home, sid, project_dir)
-    workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force)
+    if workspace_too:
+        workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force)
 
     if not has_transcript:
         return {"session_id": sid, "backup": str(backup) if backup else None, "transcript": None}
