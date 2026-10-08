@@ -91,3 +91,15 @@ def test_resume_tells_claude_the_session_is_back(laptop, tmp_path):
 def test_resume_needs_a_local_transcript(laptop):
     with pytest.raises(SystemExit, match="pull it first"):
         cli.main(["resume", "not-a-session"])
+
+
+def test_new_rejects_a_session_id_that_is_not_a_uuid(laptop):
+    configure()
+    with pytest.raises(SystemExit, match="--session-id must be a UUID"):
+        cli.main(["new", "--session-id", "not-a-uuid", "hello"])
+
+
+def test_detached_new_needs_sign_in(laptop):
+    with pytest.raises(SystemExit, match="not signed in"):
+        cli.main(["new", "--cwd", str(laptop["repo"]), "--detach", "hello"])
+    assert not (api_mod.CONFIG_PATH.parent / "logs").exists()  # no worker was started

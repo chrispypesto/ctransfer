@@ -78,3 +78,44 @@ def test_manual_restore_launches_claude_told_the_transfer_is_complete(laptop, tm
     assert argv[:2] == ["--resume", info.session_id]
     note = argv[argv.index("--append-system-prompt") + 1]
     assert "transfer t1" in note and "complete" in note and "ctransfer pull t1" in note
+
+
+def test_manual_restore_of_a_new_session_starts_claude_fresh_with_the_prompt(laptop, tmp_path, monkeypatch):
+    """`ctransfer new`: the bundle carries the project, config and memory but no transcript, and the VM starts
+    claude under the pre-chosen session id with the first prompt instead of resuming."""
+    cwd, sid = str(laptop["repo"]), "0b9e3c1a-5f8e-4c2a-9d71-3f2a6b8e1c44"
+    prompt = "fix the user's \"login\" bug in $HOME"
+    b = tmp_path / "new.tgz"
+    manifest = bundle.build(b, kind="new", home=laptop["home"], session_id=sid,
+                            project_dir=sessions.encode_project_dir(cwd), cwd=cwd, include_config=True,
+                            include_agent=True, claude_version="2.1.300", extra={"prompt": prompt})
+    assert manifest["claude_version"] == "2.1.300" and manifest["record_count"] == 0
+    bundle.extract(b, tmp_path / "bundle")
+    shutil.rmtree(laptop["repo"])
+    vm_home = tmp_path / "vm" / "home"
+    vm_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(vm_home))
+    boot = tmp_path / "boot.json"
+    boot.write_text(json.dumps({**BOOT, "agent_url": ""}))
+    real_run = subprocess.run
+    monkeypatch.setattr(agent.subprocess, "run",
+                        lambda cmd, **kw: None if any(x in cmd[-1] for x in ("install.sh", "tmux ")) else real_run(cmd, **kw))
+    agent.main(["restore", "--boot", str(boot), "--bundle-dir", str(tmp_path / "bundle"), "--user", "",
+                "--state", str(tmp_path / "state.json"), "--manual"])
+
+    proj = vm_home / ".claude" / "projects" / sessions.encode_project_dir(cwd)
+    assert (proj / "memory" / "MEMORY.md").exists() and not list(proj.glob("*.jsonl"))
+    assert (vm_home / ".claude" / "CLAUDE.md").read_text() == "global rules\n"
+    assert (Path(cwd) / "app.py").read_text() == "print('v2 uncommitted')\n"
+
+    stub = vm_home / ".local" / "bin" / "claude"
+    stub.parent.mkdir(parents=True)
+    stub.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    stub.chmod(0o755)
+    out = real_run(["bash", str(vm_home / ".ctransfer" / "launch.sh")], env={"HOME": str(vm_home), "PATH": "/usr/bin:/bin"},
+                   capture_output=True, text=True, check=True).stdout
+    argv = json.loads(out)
+    assert argv[:2] == ["--session-id", sid] and "--resume" not in argv
+    note = argv[argv.index("--append-system-prompt") + 1]
+    assert "started on a cloud VM" in note and "ctransfer pull t1" in note
+    assert argv[-1] == prompt

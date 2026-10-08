@@ -17,6 +17,15 @@ fi
 
 push() { exec "$bin" push --current --when-idle --detach "$@"; }
 
+# The skill passes its arguments on stdin through a quoted heredoc, so no shell quoting or expansion touches
+# them (an unquoted $ARGUMENTS breaks on "don't"). Split them into words as typed, without globbing.
+if [ "${1:-}" = "--stdin" ]; then
+  set -f
+  # shellcheck disable=SC2046
+  set -- $(cat)
+  set +f
+fi
+
 sub="${1:-push}"
 [ $# -gt 0 ] && shift
 case "$sub" in
@@ -25,8 +34,12 @@ case "$sub" in
   status) if [ $# -gt 0 ]; then exec "$bin" status "$@"; else exec "$bin" status --current; fi ;;
   discover) exec "$bin" discover --current "$@" ;;
   pull | ls | rm) exec "$bin" "$sub" "$@" ;;
+  new)  # leading --flags are options, the rest is the new session's first prompt
+    flags=()
+    while [ $# -gt 0 ] && [ "${1#--}" != "$1" ]; do flags+=("$1"); shift; done
+    exec "$bin" new --detach ${flags[@]+"${flags[@]}"} -- "$@" ;;
   ssh | resume) echo "$sub needs an interactive terminal. In another terminal run:  ctransfer $sub $*"; exit 1 ;;
   *)
-    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] | status [id] | discover | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
+    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] | new [--remote-control] [prompt] | status [id] | discover | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
     exit 2 ;;
 esac

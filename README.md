@@ -30,6 +30,7 @@ The plugin needs the CLI installed. It runs `$CTRANSFER_BIN` if set, otherwise `
 | Command | Does |
 |---|---|
 | `/ctransfer [--remote-control] [--no-file-history]` | push **this** session once it is idle |
+| `/ctransfer new [--remote-control] [prompt]` | start a **new** session on a cloud VM in a copy of this project; this session carries on |
 | `/ctransfer status [id]` | this session's push (state, cloud state, log tail), or one transfer |
 | `/ctransfer ls`, `pull <id>`, `rm <id>` | same as the CLI |
 
@@ -39,6 +40,8 @@ What `/ctransfer` does:
 3. From then on, every prompt you send in that session is blocked, and the hook shows the push's progress instead (the worker logs to `~/.config/ctransfer/logs/<session>.log`). `/exit` once it says running. If the push fails, that is reported once and the session stays local.
 4. The VM's `claude` runs with an appended system prompt that says the transfer is complete, so it doesn't repeat the handoff.
 
+`/ctransfer new` runs `ctransfer new --detach` in the background (log in `~/.config/ctransfer/logs/<new-session>.log`) and doesn't touch the session you typed it in. The prompt is passed through as typed, quotes and all. `/ctransfer ls` shows the new transfer.
+
 `ssh` and `resume` need a real terminal, so run them outside Claude Code. For `pull`, `/exit` the pushed session first, then run `/ctransfer pull <id>` from a new session in the same directory, or `ctransfer pull <id>` from a terminal. Then continue with `ctransfer resume <session-id>`: it runs `claude --resume` with an appended system prompt saying the session is back on the laptop, the counterpart of the VM's arrival note.
 
 ## CLI
@@ -47,6 +50,7 @@ What `/ctransfer` does:
 ctransfer discover                 # which session would be pushed (newest one for this directory)
 ctransfer push [--remote-control]  # bundle, upload, launch, wait until the VM is running
 #   then /exit the local session: continuing locally makes the two copies diverge
+ctransfer new ["first prompt"]     # start a fresh session on a VM in a copy of this directory
 ctransfer ssh <transfer-id>        # attach to the VM's `claude` tmux session (Ctrl-b d to detach)
 ctransfer ls | status <id>
 ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
@@ -54,6 +58,8 @@ ctransfer resume <session-id>      # carry on locally (claude --resume, told the
 ```
 
 `push --current` targets the Claude Code session running the command. `push --when-idle --detach` waits for that session's turn to end in a background worker, which is what `/ctransfer` uses.
+
+`new` sends the workspace, your Claude config and the project's memory, but no transcript. The VM starts `claude --session-id <id>`, with the prompt if you gave one, and an appended system prompt saying how the session was started. `pull` brings it back like any pushed session. If nobody ever prompted it, `pull` brings back only the workspace.
 
 `pull` refuses to run, and changes nothing, when:
 - the session is open locally;
