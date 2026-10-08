@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from ctransfer import agent, bundle, sessions
+from tests.conftest import run_git
 
 BOOT = {"transfer_id": "t1", "agent_url": "https://agent.example/", "agent_token": "tok", "claude_token": "sk-ant-oat-x"}
 
@@ -119,3 +120,72 @@ def test_manual_restore_of_a_new_session_starts_claude_fresh_with_the_prompt(lap
     note = argv[argv.index("--append-system-prompt") + 1]
     assert "started on a cloud VM" in note and "ctransfer pull t1" in note
     assert argv[-1] == prompt
+
+
+def test_scheduled_run_forks_the_session_headlessly_and_reports_its_result(laptop, tmp_path, monkeypatch):
+    """A cron run's restore: the branch fast-forwards from its upstream, then the launcher runs one headless,
+    forked, time-limited turn (against a stand-in claude) whose JSON result the agent reports."""
+    upstream = tmp_path / "upstream.git"
+    run_git(tmp_path, "clone", "-q", "--bare", str(laptop["repo"]), str(upstream))
+    run_git(laptop["repo"], "remote", "set-url", "origin", str(upstream))
+    info = sessions.discover(session_id=laptop["sid"])
+    b = tmp_path / "push.tgz"
+    bundle.build(b, kind="push", home=laptop["home"], session_id=info.session_id, project_dir=info.project_dir,
+                 cwd=info.cwd, include_config=True, include_agent=True)
+    bundle.extract(b, tmp_path / "bundle")
+    other = tmp_path / "other"  # someone pushes to the upstream after the schedule was created
+    run_git(tmp_path, "clone", "-q", str(upstream), str(other))
+    (other / "later.txt").write_text("landed after the push\n")
+    run_git(other, "add", "later.txt")
+    run_git(other, "-c", "user.email=o@x", "-c", "user.name=o", "commit", "-q", "-m", "later")
+    run_git(other, "push", "-q", "origin", "main")
+    shutil.rmtree(laptop["repo"])
+
+    vm_home = tmp_path / "vm" / "home"
+    vm_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(vm_home))
+    run = {"prompt": "check the build; it's broken?", "note": "unattended run 3", "timeout_sec": 600,
+           "permission_mode": "acceptEdits"}
+    boot = tmp_path / "boot.json"
+    boot.write_text(json.dumps({**BOOT, "agent_url": "", "run": run}))
+    external, real_run = [], subprocess.run
+
+    def intercept(cmd, **kw):
+        if any(x in cmd[-1] for x in ("install.sh", "tmux ")):
+            return external.append(cmd[-1])
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(agent.subprocess, "run", intercept)
+    agent.main(["restore", "--boot", str(boot), "--bundle-dir", str(tmp_path / "bundle"), "--user", "",
+                "--state", str(tmp_path / "state.json"), "--manual"])
+
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["run"] == run and state["workspace_update"] == "fast-forwarded from origin/main"
+    assert (Path(info.cwd) / "later.txt").exists()
+    assert (Path(info.cwd) / "app.py").read_text() == "print('v2 uncommitted')\n"  # the pushed edits survive
+
+    fork = "f0f0f0f0-0000-4000-8000-000000000001"
+    stub = vm_home / ".local" / "bin" / "claude"  # writes the fork's transcript and claude's -p JSON reply
+    stub.parent.mkdir(parents=True)
+    stub.write_text(f"#!{sys.executable}\nimport json, pathlib, sys\n"
+                    f"pathlib.Path({str(Path(state['claude_home']) / 'projects' / info.project_dir / (fork + '.jsonl'))!r})"
+                    ".write_text('{}\\n')\n"
+                    f"print(json.dumps({{'session_id': {fork!r}, 'result': 'build fixed', 'is_error': False, "
+                    "'num_turns': 4, 'total_cost_usd': 0.12, 'permission_denials': [{}], 'argv': sys.argv[1:]}))\n")
+    stub.chmod(0o755)
+    shim = tmp_path / "coreutils" / "timeout"  # Ubuntu's coreutils timeout, which macOS lacks: drop the limits, run
+    shim.parent.mkdir()
+    shim.write_text('#!/bin/bash\nwhile [[ $1 == -* ]]; do shift; done\nshift\nexec "$@"\n')
+    shim.chmod(0o755)
+    real_run(["bash", str(vm_home / ".ctransfer" / "launch.sh")],
+             env={"HOME": str(vm_home), "PATH": f"{shim.parent}:/usr/bin:/bin"}, check=True)
+
+    vm_agent = agent.Agent(state)
+    assert vm_agent.status() == "done"
+    result = agent.run_result(vm_home)
+    assert result == {"exit_code": 0, "session_id": fork, "is_error": False, "num_turns": 4, "total_cost_usd": 0.12,
+                      "text": "build fixed", "permission_denials": 1}
+    argv = json.loads((vm_home / ".ctransfer" / "run" / "result.json").read_text())["argv"]
+    assert argv[:4] == ["-p", run["prompt"], "--resume", info.session_id]
+    assert "--fork-session" in argv and argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert argv[argv.index("--append-system-prompt") + 1] == "unattended run 3"
