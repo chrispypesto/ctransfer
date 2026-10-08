@@ -2,7 +2,8 @@
 
 `restore` (run once by cloud-init as root): unpack a pushed bundle into the login user's
 ~/.claude and the original cwd path, install the pinned Claude Code version, start
-`claude --resume <id>` in tmux, and install a systemd unit for `run`.
+`claude --resume <id>` (or, for a `new` bundle, a fresh `claude --session-id <id> [prompt]`)
+in tmux, and install a systemd unit for `run`.
 
 `run` (systemd): heartbeat the control plane with the session's busy/idle status; when an
 export is requested, wait for a turn boundary, stop claude, bundle the transcript + workspace
@@ -114,11 +115,11 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
         "transfer_id": boot["transfer_id"], "session_id": sid, "agent_url": boot["agent_url"],
         "agent_token": boot["agent_token"], "cwd": cwd, "vm_cwd": vm_cwd, "root": ws["root"],
         "vm_root": str(vm_root), "project_dir": manifest["project_dir"], "claude_home": str(claude_dir),
-        "user": user, "restored_at": time.time(),
+        "user": user, "restored_at": time.time(), "new": manifest["kind"] == "new",
     }
     if launch:
         _install_claude(user, boot.get("claude_version"))
-        _launch(state, home, boot["claude_token"], bool(boot.get("remote_control")))
+        _launch(state, home, boot["claude_token"], bool(boot.get("remote_control")), manifest.get("prompt"))
     return state
 
 
@@ -137,19 +138,36 @@ def arrival_note(transfer_id: str) -> str:
             f"`ctransfer pull {transfer_id}` on their laptop.")
 
 
-def _launch(state: dict, home: Path, claude_token: str, remote_control: bool) -> None:
+def new_session_note(transfer_id: str) -> str:
+    """Appended to the system prompt of a session started on the VM (`ctransfer new`)."""
+    return (f"This session was started on a cloud VM by ctransfer (transfer {transfer_id}), in a copy of the user's "
+            "project at the same path as on their laptop. Work done here stays on the VM until the user brings the "
+            f"session back by running `ctransfer pull {transfer_id}` on their laptop.")
+
+
+def claude_args(state: dict, *, remote_control: bool = False, prompt: str | None = None) -> list[str]:
+    """How the VM starts claude: resume the pushed session, or start the new one under its pre-chosen id."""
+    if state["new"]:
+        args = ["--session-id", state["session_id"], "--append-system-prompt", new_session_note(state["transfer_id"])]
+    else:
+        args = ["--resume", state["session_id"], "--append-system-prompt", arrival_note(state["transfer_id"])]
+    if remote_control:
+        args.append("--remote-control")
+    return args + [prompt] if prompt else args
+
+
+def _launch(state: dict, home: Path, claude_token: str, remote_control: bool, prompt: str | None = None) -> None:
     ctl = home / ".ctransfer"
     ctl.mkdir(mode=0o700, exist_ok=True)
     env_file = ctl / "env"
     env_file.write_text(f"CLAUDE_CODE_OAUTH_TOKEN={claude_token}\n")
     env_file.chmod(0o600)
-    flags = " --remote-control" if remote_control else ""
+    args = claude_args(state, remote_control=remote_control, prompt=prompt)
     launcher = ctl / "launch.sh"
     launcher.write_text(
         "#!/bin/bash\nset -a; . \"$HOME/.ctransfer/env\"; set +a\n"
         f"cd {json.dumps(state['vm_cwd'])}\n"
-        f"exec \"$HOME/.local/bin/claude\" --resume {state['session_id']}"
-        f" --append-system-prompt {shlex.quote(arrival_note(state['transfer_id']))}{flags}\n"
+        f"exec \"$HOME/.local/bin/claude\" {shlex.join(args)}\n"
     )
     launcher.chmod(0o700)
     if state["user"]:
