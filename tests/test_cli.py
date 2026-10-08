@@ -59,8 +59,8 @@ def test_current_outside_claude_fails(laptop):
         cli.main(["discover", "--current"])
 
 
-def test_detached_push_needs_configuration(laptop):
-    with pytest.raises(SystemExit, match="not configured"):
+def test_detached_push_needs_sign_in(laptop):
+    with pytest.raises(SystemExit, match="not signed in"):
         cli.main(["push", "--session", laptop["sid"], "--when-idle", "--detach"])
     assert cli.read_marker(laptop["sid"]) is None
     assert not (api_mod.CONFIG_PATH.parent / "logs").exists()  # no worker was started
