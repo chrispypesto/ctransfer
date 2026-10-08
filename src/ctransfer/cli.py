@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from . import api as api_mod
@@ -117,18 +119,55 @@ def keys_dir() -> Path:
 
 def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = False, file_history: bool = True,
          wait: bool = True, keys: Path | None = None, sleep=time.sleep, on_launch=None) -> dict:
+    def build(path: Path) -> dict:
+        return bundle.build(path, kind="push", home=home, session_id=info.session_id, project_dir=info.project_dir,
+                            cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history)
+
+    return _send(api, info.session_id, info.cwd, build, remote_control=remote_control, wait=wait, keys=keys,
+                 sleep=sleep, on_launch=on_launch)
+
+
+def local_claude_version() -> str | None:
+    """The laptop's Claude Code version (`claude --version` prints e.g. "2.1.288 (Claude Code)")."""
+    try:
+        out = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.match(r"\s*(\d+\.\d+\.\d+)", out)
+    return m.group(1) if m else None
+
+
+def new_session(api, cwd: str, *, home: Path, session_id: str | None = None, prompt: str | None = None,
+                remote_control: bool = False, wait: bool = True, keys: Path | None = None, sleep=time.sleep,
+                on_launch=None) -> dict:
+    """Start a fresh session on a new cloud VM, in a copy of the project at cwd, optionally with a first prompt."""
+    cwd = str(Path(cwd).resolve())
+    session_id = session_id or str(uuid.uuid4())
+
+    def build(path: Path) -> dict:
+        return bundle.build(path, kind="new", home=home, session_id=session_id,
+                            project_dir=sessions.encode_project_dir(cwd), cwd=cwd, include_config=True,
+                            include_agent=True, claude_version=local_claude_version(),
+                            extra={"prompt": prompt} if prompt else None)
+
+    return _send(api, session_id, cwd, build, remote_control=remote_control, wait=wait, keys=keys, sleep=sleep,
+                 on_launch=on_launch)
+
+
+def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, wait: bool, keys: Path | None, sleep,
+          on_launch) -> dict:
+    """Build a bundle with build(path), upload it to a new transfer, launch its VM and (with wait) wait for running."""
     keys = keys or keys_dir()
     with tempfile.TemporaryDirectory(prefix="ctransfer-push-") as tmp:
         key = Path(tmp) / "key"
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "ctransfer", "-f", str(key)], check=True)
         path = Path(tmp) / "push.tgz"
-        manifest = bundle.build(path, kind="push", home=home, session_id=info.session_id, project_dir=info.project_dir,
-                                cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history)
+        manifest = build(path)
         for s in manifest["skipped"]:
             _print(f"  skipped (looks like a credential): {s}")
         _print(f"bundle: {path.stat().st_size / 1e6:.1f} MB, {manifest['record_count']} records, "
                f"claude {manifest['claude_version']}")
-        created = api.call("POST", "/sessions", {"session_id": info.session_id, "cwd": info.cwd,
+        created = api.call("POST", "/sessions", {"session_id": session_id, "cwd": cwd,
                                                  "claude_version": manifest["claude_version"], "remote_control": remote_control,
                                                  "ssh_pubkey": key.with_suffix(".pub").read_text().strip()})
         tid = created["transfer_id"]
@@ -283,22 +322,61 @@ def _detach_push(args, sid: str) -> None:
     active = read_marker(sid)
     if active and active.get("state") in ACTIVE_STATES:
         raise SystemExit(f"a push of session {sid} is already {active['state']} (see ctransfer status --current)")
-    log = api_mod.CONFIG_PATH.parent / "logs" / f"{sid}.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "-m", "ctransfer.cli", "push", "--session", sid, "--track"]
-    for flag in ("remote_control", "no_file_history", "allow_busy", "no_wait", "when_idle"):
-        if getattr(args, flag):
-            cmd.append("--" + flag.replace("_", "-"))
+    log = log_path(sid)
+    cmd = ["push", "--session", sid, "--track", *_flags(args, "remote_control", "no_file_history", "allow_busy",
+                                                          "no_wait", "when_idle")]
     marker_path(sid).unlink(missing_ok=True)
     write_marker(sid, state="queued", session_id=sid, cwd=os.getcwd(), log=str(log))
+    write_marker(sid, pid=_spawn_worker(cmd, log))
+    when = "once its current turn ends" if args.when_idle else "now"
+    print(f"queued push of session {sid}; it starts {when}.\nprogress: ctransfer status --current  (log: {log})")
+
+
+def log_path(session_id: str) -> Path:
+    return api_mod.CONFIG_PATH.parent / "logs" / f"{session_id}.log"
+
+
+def _flags(args, *names: str) -> list[str]:
+    return ["--" + name.replace("_", "-") for name in names if getattr(args, name)]
+
+
+def _spawn_worker(cli_args: list[str], log: Path) -> int:
+    """Run `ctransfer <cli_args>` in the background (it outlives the caller's shell), appending to log. Returns its pid."""
+    cmd = [sys.executable, "-m", "ctransfer.cli", *cli_args]
+    log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "ab") as out:
         out.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(cmd[1:])}\n".encode())
         out.flush()
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                 start_new_session=True)
-    write_marker(sid, pid=proc.pid)
-    when = "once its current turn ends" if args.when_idle else "now"
-    print(f"queued push of session {sid}; it starts {when}.\nprogress: ctransfer status --current  (log: {log})")
+    return proc.pid
+
+
+def cmd_new(args) -> None:
+    if args.session_id:
+        try:
+            sid = str(uuid.UUID(args.session_id))
+        except ValueError:
+            raise SystemExit(f"--session-id must be a UUID, not {args.session_id!r}")
+    else:
+        sid = str(uuid.uuid4())
+    cwd = str(Path(args.cwd or os.getcwd()).resolve())
+    prompt = " ".join(args.prompt).strip() or None
+    if args.detach:
+        api_mod.Api.from_config()  # fail now, in the caller's terminal, if not signed in
+        log = log_path(sid)
+        cmd = ["new", "--session-id", sid, "--cwd", cwd, *_flags(args, "remote_control", "no_wait"),
+               *(["--", prompt] if prompt else [])]
+        _spawn_worker(cmd, log)
+        print(f"starting new cloud session {sid} for {cwd} in the background.\n"
+              f"progress: {log}  (`ctransfer ls` shows its transfer once created)")
+        return
+    item = new_session(api_mod.Api.from_config(), cwd, home=sessions.claude_home(), session_id=sid, prompt=prompt,
+                       remote_control=args.remote_control, wait=not args.no_wait)
+    tid = item["transfer_id"]
+    where = "is running in the cloud" if item["state"] == "running" else f"is {item['state']} in the cloud"
+    _print(f"\nnew session {sid} {where} as transfer {tid}")
+    _print(f"attach:   ctransfer ssh {tid}\nbring back: ctransfer pull {tid}")
 
 
 def cmd_ls(args) -> None:
@@ -409,6 +487,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--detach", action="store_true", help="push from a background worker; log under ~/.config/ctransfer/logs")
     p.add_argument("--track", action="store_true", help=argparse.SUPPRESS)  # set on the detached worker
     p.set_defaults(fn=cmd_push)
+
+    p = sub.add_parser("new", help="start a new session on a cloud VM, in a copy of this project")
+    p.add_argument("prompt", nargs="*", help="first prompt for the new session (default: start idle)")
+    p.add_argument("--cwd", help="project directory to copy (default: current directory)")
+    p.add_argument("--session-id", help="UUID for the new session (default: random)")
+    p.add_argument("--remote-control", action="store_true", help="start claude with --remote-control on the VM")
+    p.add_argument("--no-wait", action="store_true")
+    p.add_argument("--detach", action="store_true", help="start from a background worker; log under ~/.config/ctransfer/logs")
+    p.set_defaults(fn=cmd_new)
 
     def overwrite_args(p):
         p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged")
