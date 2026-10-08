@@ -1,4 +1,4 @@
-"""CLI behavior that needs no control plane. Pushes that reach one are tested in claude_transfer."""
+"""CLI behavior that needs no control plane. Pushes that reach one are tested with the control plane."""
 
 import json
 import os
