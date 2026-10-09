@@ -29,7 +29,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import bundle, net, sessions, workspace
+from . import bundle, mcp, net, sessions, workspace
 
 STATE_PATH = Path("/var/lib/ctransfer/state.json")
 AGENT_DIR = Path("/opt/ctransfer/agent")
@@ -78,9 +78,10 @@ def _first_missing_ancestor(path: Path) -> Path | None:
     return missing
 
 
-def _write_global_config(path: Path, trusted: list[str]) -> None:
+def _write_global_config(path: Path, trusted: list[str], carried_mcp: dict, root_prefix: str = "") -> None:
     cfg = json.loads(path.read_text()) if path.exists() else {}
     cfg["hasCompletedOnboarding"] = True
+    mcp.install(cfg, carried_mcp, root_prefix)
     projects = cfg.setdefault("projects", {})
     for p in trusted:
         projects.setdefault(p, {})["hasTrustDialogAccepted"] = True
@@ -103,7 +104,8 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
     vm_cwd = root_prefix + cwd
     created_top = _first_missing_ancestor(vm_root)
     workspace.restore_fresh(ws, bundle_dir / "workspace", vm_root)
-    _write_global_config(home / ".claude.json", sorted({vm_cwd, str(vm_root)}))
+    carried_mcp = json.loads((bundle_dir / "mcp.json").read_text()) if (bundle_dir / "mcp.json").exists() else {}
+    _write_global_config(home / ".claude.json", sorted({vm_cwd, str(vm_root)}), carried_mcp, root_prefix)
 
     ssh_dir = None
     if boot.get("ssh_pubkey"):

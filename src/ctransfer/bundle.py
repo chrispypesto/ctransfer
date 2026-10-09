@@ -6,6 +6,7 @@ Layout of a bundle (.tgz):
                                                        `new` bundle, or in an export of a never-prompted session
     claude/file-history/<session-id>/                  pre-edit file copies for /rewind
     claude/CLAUDE.md, settings.json, skills/, ...      user config (push only)
+    mcp.json                                           MCP servers from ~/.claude.json, see mcp.collect (push only)
     workspace/                                         see workspace.capture
     agent/ctransfer/*.py                               VM agent source (push only)
 """
@@ -21,13 +22,13 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import sessions, workspace
+from . import mcp, sessions, workspace
 
 FORMAT = 1
 CONFIG_ITEMS = ("CLAUDE.md", "settings.json", "skills", "agents", "commands", "output-styles")
 # Synced from the claude.ai account on the VM itself; no need to carry it.
 CONFIG_EXCLUDE = {"skills/synced"}
-AGENT_MODULES = ("__init__.py", "sessions.py", "workspace.py", "bundle.py", "net.py", "agent.py")
+AGENT_MODULES = ("__init__.py", "sessions.py", "workspace.py", "bundle.py", "net.py", "mcp.py", "agent.py")
 # Never shipped, whatever directory they turn up in.
 FORBIDDEN_NAMES = {".credentials.json", ".claude.json"}
 
@@ -110,6 +111,9 @@ def build(
         ws = workspace.capture(workspace_dir or cwd, stage / "workspace")
         if record_root:
             ws["root"] = record_root
+        carried_mcp = mcp.collect(sessions.global_config_path(), [cwd, ws["root"]], skipped) if include_config else {}
+        if carried_mcp:
+            (stage / "mcp.json").write_text(json.dumps(carried_mcp, indent=2))
         _assert_clean(stage)
 
         has_transcript = transcript.is_file()
@@ -124,6 +128,7 @@ def build(
             "record_count": len(uuids),
             "last_uuid": uuids[-1] if uuids else None,
             "extra_transcripts": [t.name for t in extra_transcripts],
+            "mcp_servers": mcp.names(carried_mcp),
             "workspace": ws,
             "skipped": sorted(skipped + [f"workspace:{s}" for s in ws.get("skipped", [])]),
             "created_at": int(time.time()),

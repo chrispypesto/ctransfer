@@ -96,6 +96,14 @@ A secret named `GITHUB_TOKEN` or `GH_TOKEN` also sets up GitHub on the VM:
 
 Prefer a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) limited to the repositories the VM works on, with Contents and Pull requests read/write. `gh auth token | ctransfer secret set GITHUB_TOKEN` also works, but hands the VM your laptop login's full scope.
 
+### MCP servers
+
+A push carries your MCP server configs along with the session:
+- user-scope servers (`claude mcp add -s user`) and this project's local-scope ones (the default scope), from `~/.claude.json`, plus the project's choices about the servers in its `.mcp.json`. The `.mcp.json` itself is part of the workspace.
+- A server whose `env` or `headers` contain a literal credential (a key named like `*TOKEN*`, `*KEY*`, `Authorization`, ...) stays on the laptop, and the push says so. Store the value as a secret and reference it instead: `"env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"}`. Claude Code expands `${NAME}` from its environment, which on the VM holds your secrets.
+- Servers that sign in with OAuth (most remote ones) have their tokens in your laptop's keychain. Those tokens don't move, so these servers need authenticating again on the VM.
+- Stdio servers run on the VM, so their command must exist there (the VM has Python 3; there is no Node.js unless the session installs it).
+
 ## Scheduled runs
 
 `ctransfer cron` snapshots a session once, then runs a task on it on a cron schedule. Each run gets its own short-lived VM:

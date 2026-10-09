@@ -252,3 +252,30 @@ def test_without_a_github_token_git_is_left_alone(laptop, tmp_path):
     _, vm_home, state = push_and_restore(laptop, tmp_path)
     assert not (vm_home / ".gitconfig").exists()
     assert run_git(state["vm_root"], "config", "user.name") == "t"  # commits still carry the laptop's identity
+
+
+def test_mcp_servers_follow_the_session_except_those_holding_literal_credentials(laptop, tmp_path):
+    """User-scope servers and the project's local-scope ones land in the VM's ~/.claude.json at the same paths.
+    One with a token written into its config stays on the laptop; one referencing a secret as ${NAME} goes."""
+    repo = str(laptop["repo"])
+    github = {"type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+              "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}", "LOG_LEVEL": "debug"}}
+    notion = {"type": "http", "url": "https://mcp.notion.com/mcp"}
+    (laptop["home"] / ".claude.json").write_text(json.dumps({
+        "oauthAccount": {"emailAddress": "me@example.com"},
+        "mcpServers": {"github": github,
+                       "leaky": {"type": "http", "url": "https://mcp.example.com", "headers": {"Authorization": "Bearer abc123"}}},
+        "projects": {repo: {"mcpServers": {"notion": notion}, "enabledMcpjsonServers": ["db"], "allowedTools": []},
+                     "/somewhere/else": {"mcpServers": {"other": notion}}},
+    }))
+    info, vm_home, state = push_and_restore(laptop, tmp_path)
+    manifest = json.loads((tmp_path / "unpacked" / "manifest.json").read_text())
+    assert manifest["mcp_servers"] == ["github (user)", "notion (local)"] and "mcp:user:leaky" in manifest["skipped"]
+    assert b"abc123" not in subprocess.run(["tar", "-xzOf", str(tmp_path / "push.tgz")], capture_output=True).stdout
+
+    cfg = json.loads((vm_home / ".claude.json").read_text())
+    assert cfg["mcpServers"] == {"github": github}
+    project = cfg["projects"][state["vm_root"]]
+    assert project["mcpServers"] == {"notion": notion} and project["enabledMcpjsonServers"] == ["db"]
+    assert project["hasTrustDialogAccepted"]
+    assert "oauthAccount" not in cfg and not any(p.endswith("/somewhere/else") for p in cfg["projects"])

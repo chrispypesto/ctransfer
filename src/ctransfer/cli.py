@@ -118,14 +118,24 @@ def keys_dir() -> Path:
     return api_mod.CONFIG_PATH.parent / "keys"
 
 
+def report_bundle(path: Path, manifest: dict) -> None:
+    """What a bundle carries and what it left behind."""
+    for s in manifest["skipped"]:
+        _print(f"  skipped (looks like a credential): {s}")
+    if any(s.startswith("mcp:") for s in manifest["skipped"]):
+        _print("  (an MCP server with a literal token in its env or headers stays behind: store the token with "
+               "`ctransfer secret set NAME` and write ${NAME} in its config instead)")
+    if manifest.get("mcp_servers"):
+        _print(f"MCP servers: {', '.join(manifest['mcp_servers'])}")
+    _print(f"bundle: {path.stat().st_size / 1e6:.1f} MB, {manifest['record_count']} records, "
+           f"claude {manifest['claude_version']}")
+
+
 def build_push_bundle(path: Path, info: sessions.SessionInfo, *, home: Path, file_history: bool = True) -> dict:
     """A schedule's template: the session, user config, workspace and the agent. Returns its manifest."""
     manifest = bundle.build(path, kind="push", home=home, session_id=info.session_id, project_dir=info.project_dir,
                             cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history)
-    for s in manifest["skipped"]:
-        _print(f"  skipped (looks like a credential): {s}")
-    _print(f"bundle: {path.stat().st_size / 1e6:.1f} MB, {manifest['record_count']} records, "
-           f"claude {manifest['claude_version']}")
+    report_bundle(path, manifest)
     return manifest
 
 
@@ -182,10 +192,7 @@ def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, wait: 
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "ctransfer", "-f", str(key)], check=True)
         path = Path(tmp) / "push.tgz"
         manifest = build(path)
-        for s in manifest["skipped"]:
-            _print(f"  skipped (looks like a credential): {s}")
-        _print(f"bundle: {path.stat().st_size / 1e6:.1f} MB, {manifest['record_count']} records, "
-               f"claude {manifest['claude_version']}")
+        report_bundle(path, manifest)
         created = api.call("POST", "/sessions", {"session_id": session_id, "cwd": cwd,
                                                  "claude_version": manifest["claude_version"], "remote_control": remote_control,
                                                  "ssh_pubkey": key.with_suffix(".pub").read_text().strip()})
