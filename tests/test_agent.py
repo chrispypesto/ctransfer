@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from ctransfer import agent, bundle, sessions
 from tests.conftest import run_git
 
@@ -39,13 +41,15 @@ def test_restore_lays_out_claude_home_and_workspace(laptop, tmp_path):
     assert "sk-ant" not in json.dumps(state)
 
 
-def test_manual_restore_launches_claude_told_the_transfer_is_complete(laptop, tmp_path, monkeypatch):
+@pytest.mark.parametrize("prompt", [None, "keep going, then fix the user's \"login\" bug in $HOME"])
+def test_manual_restore_launches_claude_told_the_transfer_is_complete(laptop, tmp_path, monkeypatch, prompt):
     """`agent restore --manual` end to end. Only the external steps are intercepted: the Claude installer
-    (network) and tmux; the generated launcher then runs for real against a stand-in claude binary."""
+    (network) and tmux; the generated launcher then runs for real against a stand-in claude binary.
+    `ctransfer push <prompt>`: the resumed claude runs the prompt at once instead of waiting idle."""
     info = sessions.discover(session_id=laptop["sid"])
     b = tmp_path / "push.tgz"
     bundle.build(b, kind="push", home=laptop["home"], session_id=info.session_id, project_dir=info.project_dir,
-                 cwd=info.cwd, include_config=True, include_agent=True)
+                 cwd=info.cwd, include_config=True, include_agent=True, extra={"prompt": prompt} if prompt else None)
     bundle.extract(b, tmp_path / "bundle")
     shutil.rmtree(laptop["repo"])  # the VM is another machine: the project path starts out empty
     vm_home = tmp_path / "vm" / "home"
@@ -77,8 +81,9 @@ def test_manual_restore_launches_claude_told_the_transfer_is_complete(laptop, tm
                    capture_output=True, text=True, check=True).stdout
     argv = json.loads(out)
     assert argv[:2] == ["--resume", info.session_id]
-    note = argv[argv.index("--append-system-prompt") + 1]
-    assert "transfer t1" in note and "complete" in note and "ctransfer pull t1" in note
+    note_at = argv.index("--append-system-prompt") + 1
+    assert "transfer t1" in argv[note_at] and "complete" in argv[note_at] and "ctransfer pull t1" in argv[note_at]
+    assert argv[note_at + 1:] == ([prompt] if prompt else [])
 
 
 def test_manual_restore_of_a_new_session_starts_claude_fresh_with_the_prompt(laptop, tmp_path, monkeypatch):

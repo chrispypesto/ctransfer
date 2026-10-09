@@ -129,10 +129,13 @@ def build_push_bundle(path: Path, info: sessions.SessionInfo, *, home: Path, fil
 
 
 def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = False, file_history: bool = True,
-         wait: bool = True, keys: Path | None = None, sleep=time.sleep, on_launch=None) -> dict:
+         prompt: str | None = None, wait: bool = True, keys: Path | None = None, sleep=time.sleep,
+         on_launch=None) -> dict:
+    """Send a session to a new cloud VM; with a prompt, the VM's claude resumes straight into that turn."""
     def build(path: Path) -> dict:
         return bundle.build(path, kind="push", home=home, session_id=info.session_id, project_dir=info.project_dir,
-                            cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history)
+                            cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history,
+                            extra={"prompt": prompt} if prompt else None)
 
     return _send(api, info.session_id, info.cwd, build, remote_control=remote_control, wait=wait, keys=keys,
                  sleep=sleep, on_launch=on_launch)
@@ -297,6 +300,11 @@ def cmd_bundle(args) -> None:
     print(json.dumps(m, indent=2))
 
 
+def prompt_arg(args) -> str | None:
+    """The positional first prompt of push/new: its words joined with single spaces, None if empty."""
+    return " ".join(args.prompt).strip() or None
+
+
 def cmd_push(args) -> None:
     # The transcript may not exist until the invoking turn ends (/ctransfer as a session's first prompt),
     # so detached and --when-idle pushes resolve just the id up front and read the session afterwards.
@@ -313,7 +321,7 @@ def cmd_push(args) -> None:
             raise SystemExit(f"session {sid} is mid-turn; wait for it to go idle (or pass --allow-busy/--when-idle)")
         track(state="pushing")
         item = push(api_mod.Api.from_config(), info, home=sessions.claude_home(), remote_control=args.remote_control,
-                    file_history=not args.no_file_history, wait=not args.no_wait,
+                    file_history=not args.no_file_history, prompt=prompt_arg(args), wait=not args.no_wait,
                     on_launch=lambda tid: track(state="launching", transfer_id=tid))
     except BaseException as e:
         track(state="failed", error=str(e) or type(e).__name__)
@@ -336,6 +344,9 @@ def _detach_push(args, sid: str) -> None:
     log = log_path(sid)
     cmd = ["push", "--session", sid, "--track", *_flags(args, "remote_control", "no_file_history", "allow_busy",
                                                           "no_wait", "when_idle")]
+    prompt = prompt_arg(args)
+    if prompt:
+        cmd += ["--", prompt]
     marker_path(sid).unlink(missing_ok=True)
     write_marker(sid, state="queued", session_id=sid, cwd=os.getcwd(), log=str(log))
     write_marker(sid, pid=_spawn_worker(cmd, log))
@@ -372,7 +383,7 @@ def cmd_new(args) -> None:
     else:
         sid = str(uuid.uuid4())
     cwd = str(Path(args.cwd or os.getcwd()).resolve())
-    prompt = " ".join(args.prompt).strip() or None
+    prompt = prompt_arg(args)
     if args.detach:
         api_mod.Api.from_config()  # fail now, in the caller's terminal, if not signed in
         log = log_path(sid)
@@ -617,6 +628,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--when-idle", action="store_true", help="wait for the session's current turn to end, then push")
     p.add_argument("--detach", action="store_true", help="push from a background worker; log under ~/.config/ctransfer/logs")
     p.add_argument("--track", action="store_true", help=argparse.SUPPRESS)  # set on the detached worker
+    p.add_argument("prompt", nargs="*", help="prompt the VM's claude runs as soon as it resumes (default: wait idle)")
     p.set_defaults(fn=cmd_push)
 
     p = sub.add_parser("new", help="start a new session on a cloud VM, in a copy of this project")
