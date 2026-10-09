@@ -255,6 +255,7 @@ def cmd_logout(args) -> None:
     cfg = api_mod.load_config()
     cfg.pop("token", None)
     api_mod.save_config(cfg)
+    _print("signed out")
 
 
 def cmd_token(args) -> None:
@@ -374,40 +375,75 @@ def cmd_new(args) -> None:
     _print(f"attach:   ctransfer ssh {tid}\nbring back: ctransfer pull {tid}")
 
 
+def _local_time(t: int | None) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "-"
+
+
+def _next_steps(tid: str, state: str) -> str:
+    """What the user can do with a transfer in this state, as commands to copy."""
+    if state == "running":
+        return f"attach: ctransfer ssh {tid}   bring back: ctransfer pull {tid}"
+    if state in ("launching", "bootstrapping", "export_requested", "exported"):
+        return f"bring back: ctransfer pull {tid}"
+    return ""
+
+
 def cmd_ls(args) -> None:
-    for s in api_mod.Api.from_config().call("GET", "/sessions")["sessions"]:
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(s.get("created_at", 0)))
-        print(f"{s['transfer_id']}  {s['state']:<17} {s.get('claude_status', '-'):<8} {when}  {s['cwd']}")
+    transfers = api_mod.Api.from_config().call("GET", "/sessions")["sessions"]
+    if not transfers:
+        print("no cloud sessions. `ctransfer push` moves this one to the cloud; `ctransfer new` starts a fresh one.")
+        return
+    print(f"{'TRANSFER':<12}  {'STATE':<17} {'CLAUDE':<8} {'CREATED':<16}  PROJECT")
+    for s in transfers:
+        print(f"{s['transfer_id']:<12}  {s['state']:<17} {s.get('claude_status', '-'):<8} "
+              f"{_local_time(s.get('created_at')):<16}  {s['cwd']}")
 
 
 def cmd_status(args) -> None:
     if not args.transfer_id:
         return _status_current()
     item = api_mod.Api.from_config().call("GET", f"/sessions/{args.transfer_id}")
-    item.pop("download_url", None)
-    print(json.dumps(item, indent=2))
+    state = item["state"]
+    claude = f" (claude {item['claude_status']})" if state == "running" and item.get("claude_status") else ""
+    lines = [f"transfer {item['transfer_id']}: {state}{claude}",
+             f"  session  {item['session_id']}",
+             f"  project  {item['cwd']}",
+             f"  created  {_local_time(item.get('created_at'))}"]
+    if item.get("failure"):
+        lines.append(f"  failure  {item['failure']}")
+    if item.get("export_reason") and item["export_reason"] != "user":
+        lines.append(f"  exported by the service ({item['export_reason']}); your work is kept until you pull it")
+    steps = _next_steps(item["transfer_id"], state)
+    print("\n".join(lines + ([steps] if steps else [])))
 
 
 def _status_current() -> None:
-    """The detached push of the invoking session: its marker, the cloud state, and the log tail."""
+    """The detached push of the invoking session: its progress, the cloud state, and the log tail."""
     sid = sessions.current_session_id()
     if not sid:
         raise SystemExit("not running inside a Claude Code session; pass a transfer id")
     marker = read_marker(sid)
     if not marker:
         raise SystemExit(f"no ctransfer push recorded for session {sid}")
-    if marker.get("transfer_id"):
+    lines = [f"push of session {sid}: {marker['state']}"]
+    tid = marker.get("transfer_id")
+    if tid:
         try:
-            marker["cloud_state"] = api_mod.Api.from_config().call("GET", f"/sessions/{marker['transfer_id']}")["state"]
-        except (SystemExit, Exception) as e:  # not signed in, network: the marker still helps
-            marker["cloud_state"] = f"unknown ({e})"
-    print(json.dumps(marker, indent=2))
+            cloud = api_mod.Api.from_config().call("GET", f"/sessions/{tid}")["state"]
+        except (SystemExit, Exception) as e:  # not signed in, network: the local progress still helps
+            cloud = f"unknown ({e})"
+        lines.append(f"  transfer  {tid} (in the cloud: {cloud})")
+    if marker.get("error"):
+        lines.append(f"  error     {marker['error']}")
+    if tid and marker["state"] == "running":
+        lines.append(_next_steps(tid, "running"))
     try:
         tail = Path(marker["log"]).read_text().splitlines()[-10:]
     except (KeyError, OSError):
         tail = []
     if tail:
-        print("\n".join(["", "log:", *tail]))
+        lines += ["", f"log ({marker['log']}):", *tail]
+    print("\n".join(lines))
 
 
 def cmd_ssh(args) -> None:
@@ -440,7 +476,11 @@ def cmd_usage(args) -> None:
 def cmd_rm(args) -> None:
     out = api_mod.Api.from_config().call("DELETE", f"/sessions/{args.transfer_id}")
     clear_markers(args.transfer_id)
-    print(json.dumps(out, indent=2))
+    if out["state"] == "exported":
+        print(f"deleted the VM of {args.transfer_id}; its exported session can still be pulled: "
+              f"ctransfer pull {args.transfer_id}")
+    else:
+        print(f"deleted {args.transfer_id}: its VM and any work done on it are gone")
 
 
 # ---- cron: scheduled runs of a pushed session ---------------------------------------------------
@@ -484,7 +524,8 @@ def cmd_cron_ls(args) -> None:
 
 def cmd_cron_run(args) -> None:
     out = api_mod.Api.from_config().call("POST", f"/schedules/{args.schedule_id}/run")
-    print(json.dumps(out, indent=2))
+    print(f"started run {out['run_id']} of schedule {out['schedule_id']}\n"
+          f"results: ctransfer cron logs {out['schedule_id']}")
 
 
 def _run_line(run: dict) -> str:
@@ -529,7 +570,9 @@ def cmd_cron_pull(args) -> None:
 
 
 def cmd_cron_rm(args) -> None:
-    print(json.dumps(api_mod.Api.from_config().call("DELETE", f"/schedules/{args.schedule_id}"), indent=2))
+    out = api_mod.Api.from_config().call("DELETE", f"/schedules/{args.schedule_id}")
+    stopped = f"; stopped its running run(s): {', '.join(out['runs_stopped'])}" if out["runs_stopped"] else ""
+    print(f"deleted schedule {out['deleted']}{stopped}")
 
 
 def add_cron_parser(sub, session_args) -> None:
