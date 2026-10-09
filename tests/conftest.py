@@ -20,11 +20,8 @@ def hermetic(tmp_path, monkeypatch):
 
 
 def configure_signed_in(api_url: str = "https://api.invalid/") -> None:
-    """A configured CLI with a saved sign-in, as `ctransfer configure` + `ctransfer login` leave it."""
-    from ctransfer import cli
-
-    cli.main(["configure", "--api-url", api_url])
-    api_mod.save_config({**api_mod.load_config(), "token": "test-token"})
+    """A saved sign-in, as `ctransfer login` leaves it, against api_url."""
+    api_mod.save_config({"api_url": api_url, "token": "test-token"})
 
 
 def run_git(root, *args):

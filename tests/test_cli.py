@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from ctransfer import api as api_mod
-from ctransfer import cli
+from ctransfer import cli, sessions
 from tests.conftest import configure_signed_in, write_transcript
 
 
@@ -35,30 +35,35 @@ def add_newer_live_session(laptop) -> str:
     return other
 
 
-def discovered(capsys, *argv) -> str:
-    cli.main(["discover", *argv])
-    return json.loads(capsys.readouterr().out)["session_id"]
+def pushed_session(*argv) -> str:
+    """The session `push` picks. Every session already has a push underway, so it refuses, naming its pick."""
+    configure()
+    for f in (sessions.claude_home() / "projects").glob("*/*.jsonl"):
+        cli.write_marker(f.stem, state="pushing")
+    with pytest.raises(SystemExit, match="already pushing") as e:
+        cli.main(["push", "--detach", *argv])
+    return str(e.value).split("a push of session ")[1].split(" ")[0]
 
 
-def test_current_targets_invoking_session_from_env(laptop, capsys, monkeypatch):
+def test_push_targets_the_newest_session_or_the_invoking_one(laptop, monkeypatch):
     other = add_newer_live_session(laptop)
     monkeypatch.chdir(laptop["repo"])
-    assert discovered(capsys) == other
+    assert pushed_session() == other
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", laptop["sid"])
-    assert discovered(capsys, "--current") == laptop["sid"]
+    assert pushed_session("--current") == laptop["sid"]
 
 
-def test_current_falls_back_to_ancestor_process(laptop, capsys):
+def test_current_falls_back_to_ancestor_process(laptop):
     # The fixture registers this test process as running laptop["sid"]; the newer session is its parent.
     add_newer_live_session(laptop)
-    assert discovered(capsys, "--current") == laptop["sid"]
+    assert pushed_session("--current") == laptop["sid"]
 
 
 def test_current_outside_claude_fails(laptop):
     for f in (laptop["home"] / "sessions").iterdir():
         f.unlink()
     with pytest.raises(SystemExit, match="not running inside a Claude Code session"):
-        cli.main(["discover", "--current"])
+        cli.main(["push", "--current"])
 
 
 def test_detached_push_needs_sign_in(laptop):

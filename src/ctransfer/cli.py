@@ -220,12 +220,6 @@ def cmd_pull(args) -> None:
     _report_pull(result)
 
 
-def cmd_apply(args) -> None:
-    with tempfile.TemporaryDirectory(prefix="ctransfer-apply-") as tmp:
-        manifest = bundle.extract(args.bundle, tmp)
-        _report_pull(apply.apply_export(tmp, manifest, force=args.force, as_fork=args.as_fork, stash=args.stash))
-
-
 def _report_pull(result: dict) -> None:
     if result["backup"]:
         _print(f"previous local state backed up to {result['backup']}")
@@ -247,15 +241,6 @@ def cmd_resume(args) -> None:
     if not sessions.find_transcript(args.session_id):
         raise SystemExit(f"no local transcript for session {args.session_id}; pull it first")
     os.execvp("claude", ["claude", "--resume", args.session_id, "--append-system-prompt", RETURN_NOTE])
-
-
-def cmd_configure(args) -> None:
-    cfg = api_mod.load_config()
-    for key in ("api_url",):
-        if getattr(args, key):
-            cfg[key] = getattr(args, key)
-    api_mod.save_config(cfg)
-    print(json.dumps(cfg, indent=2))
 
 
 def cmd_login(args) -> None:
@@ -287,19 +272,6 @@ def cmd_token(args) -> None:
     _print("Claude token saved; your VMs will run on it")
 
 
-def cmd_discover(args) -> None:
-    info = discover(args)
-    print(json.dumps({"session_id": info.session_id, "cwd": info.cwd, "status": info.status,
-                      "transcript": str(info.transcript), "pid": (info.live or {}).get("pid")}, indent=2))
-
-
-def cmd_bundle(args) -> None:
-    info = discover(args)
-    m = bundle.build(args.out, kind="push", home=sessions.claude_home(), session_id=info.session_id,
-                     project_dir=info.project_dir, cwd=info.cwd, include_config=True, include_agent=True)
-    print(json.dumps(m, indent=2))
-
-
 def prompt_arg(args) -> str | None:
     """The positional first prompt of push/new: its words joined with single spaces, None if empty."""
     return " ".join(args.prompt).strip() or None
@@ -317,6 +289,7 @@ def cmd_push(args) -> None:
             _print(f"waiting for session {sid} to finish its turn")
             wait_turn_end(sid)
         info = sessions.discover(session_id=sid)
+        _print(f"pushing session {sid} ({info.cwd})")
         if info.status == "busy" and not (args.allow_busy or args.when_idle):
             raise SystemExit(f"session {sid} is mid-turn; wait for it to go idle (or pass --allow-busy/--when-idle)")
         track(state="pushing")
@@ -592,14 +565,10 @@ def add_cron_parser(sub, session_args) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ctransfer", description="Move a Claude Code session to a cloud VM and back.")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    p = sub.add_parser("configure", help="point at another control plane (default: the hosted one)")
-    p.add_argument("--api-url")
-    p.set_defaults(fn=cmd_configure)
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
+    # Listed in the order a user meets them: set up, send work out, check on it, bring it back.
 
     sub.add_parser("login", help="sign in with GitHub").set_defaults(fn=cmd_login)
-    sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
 
     p = sub.add_parser("token", help="store (set, read from stdin) or delete (rm) the Claude token your VMs run on")
     p.add_argument("action", choices=("set", "rm"))
@@ -610,21 +579,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--cwd", help="project directory (default: current directory)")
         p.add_argument("--current", action="store_true", help="the Claude Code session running this command")
 
-    p = sub.add_parser("discover", help="show which local session would be pushed")
-    session_args(p)
-    p.set_defaults(fn=cmd_discover)
-
-    p = sub.add_parser("bundle", help="write a push bundle to a file (manual spike / debugging)")
-    session_args(p)
-    p.add_argument("--out", required=True)
-    p.set_defaults(fn=cmd_bundle)
-
-    p = sub.add_parser("push", help="send a session to a new cloud VM")
+    p = sub.add_parser("push", help="move a session to a new cloud VM")
     session_args(p)
     p.add_argument("--remote-control", action="store_true", help="start claude with --remote-control on the VM")
     p.add_argument("--no-file-history", action="store_true", help="skip /rewind checkpoints")
     p.add_argument("--allow-busy", action="store_true", help="push even if the session is mid-turn")
-    p.add_argument("--no-wait", action="store_true")
+    p.add_argument("--no-wait", action="store_true", help="return once the VM is launching")
     p.add_argument("--when-idle", action="store_true", help="wait for the session's current turn to end, then push")
     p.add_argument("--detach", action="store_true", help="push from a background worker; log under ~/.config/ctransfer/logs")
     p.add_argument("--track", action="store_true", help=argparse.SUPPRESS)  # set on the detached worker
@@ -636,47 +596,41 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cwd", help="project directory to copy (default: current directory)")
     p.add_argument("--session-id", help="UUID for the new session (default: random)")
     p.add_argument("--remote-control", action="store_true", help="start claude with --remote-control on the VM")
-    p.add_argument("--no-wait", action="store_true")
+    p.add_argument("--no-wait", action="store_true", help="return once the VM is launching")
     p.add_argument("--detach", action="store_true", help="start from a background worker; log under ~/.config/ctransfer/logs")
     p.set_defaults(fn=cmd_new)
 
-    def overwrite_args(p):
-        p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged")
-        p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
-        p.add_argument("--stash", action="store_true", help="stash local uncommitted changes instead of refusing")
+    sub.add_parser("ls", help="list your cloud sessions").set_defaults(fn=cmd_ls)
+
+    p = sub.add_parser("status", help="one cloud session in detail (no id: this Claude Code session's push)")
+    p.add_argument("transfer_id", nargs="?")
+    p.add_argument("--current", action="store_true", help="the Claude Code session running this command (default)")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("ssh", help="attach to a cloud session's claude")
+    p.add_argument("transfer_id")
+    p.add_argument("command", nargs="?", help="run this on the VM instead of attaching")
+    p.set_defaults(fn=cmd_ssh)
 
     p = sub.add_parser("pull", help="bring a cloud session back, overwriting the local copy")
     p.add_argument("transfer_id")
-    overwrite_args(p)
+    p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged")
+    p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
+    p.add_argument("--stash", action="store_true", help="stash local uncommitted changes instead of refusing")
     p.set_defaults(fn=cmd_pull)
-
-    p = sub.add_parser("apply", help="apply an export bundle file locally (manual spike)")
-    p.add_argument("bundle")
-    overwrite_args(p)
-    p.set_defaults(fn=cmd_apply)
-
-    sub.add_parser("usage", help="this month's VM-hours and transfer volume").set_defaults(fn=cmd_usage)
 
     p = sub.add_parser("resume", help="continue a pulled session locally (claude --resume, told it is back)")
     p.add_argument("session_id")
     p.set_defaults(fn=cmd_resume)
 
-    p = sub.add_parser("ls", help="list transfers")
-    p.set_defaults(fn=cmd_ls)
-
-    for name, fn, help_ in (("status", cmd_status, "show one transfer"), ("ssh", cmd_ssh, "attach to the VM's claude tmux session"),
-                            ("rm", cmd_rm, "delete a transfer's VM")):
-        p = sub.add_parser(name, help=help_)
-        if name == "status":  # no id: the push of the invoking Claude Code session
-            p.add_argument("transfer_id", nargs="?")
-            p.add_argument("--current", action="store_true", help="the Claude Code session running this command (default)")
-        else:
-            p.add_argument("transfer_id")
-        if name == "ssh":
-            p.add_argument("command", nargs="?", help="run this instead of attaching to tmux")
-        p.set_defaults(fn=fn)
+    p = sub.add_parser("rm", help="delete a cloud session and its VM without bringing it back")
+    p.add_argument("transfer_id")
+    p.set_defaults(fn=cmd_rm)
 
     add_cron_parser(sub, session_args)
+
+    sub.add_parser("usage", help="your free-tier usage this month").set_defaults(fn=cmd_usage)
+    sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
     return ap
 
 

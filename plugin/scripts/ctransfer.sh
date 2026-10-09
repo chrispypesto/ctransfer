@@ -36,7 +36,6 @@ case "$sub" in
   push) push "$@" ;;
   -*) push "$sub" "$@" ;;  # /ctransfer --remote-control
   status) if [ $# -gt 0 ]; then exec "$bin" status "$@"; else exec "$bin" status --current; fi ;;
-  discover) exec "$bin" discover --current "$@" ;;
   pull | ls | rm) exec "$bin" "$sub" "$@" ;;
   new)  # leading --flags are options, the rest is the new session's first prompt
     flags=()
@@ -44,6 +43,6 @@ case "$sub" in
     exec "$bin" new --detach ${flags[@]+"${flags[@]}"} -- "$@" ;;
   ssh | resume) echo "$sub needs an interactive terminal. In another terminal run:  ctransfer $sub $*"; exit 1 ;;
   *)
-    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] [prompt] | new [--remote-control] [prompt] | status [id] | discover | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
+    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] [prompt] | new [--remote-control] [prompt] | status [id] | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
     exit 2 ;;
 esac
