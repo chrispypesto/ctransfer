@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 
 from . import api as api_mod
-from . import apply, bundle, net, sessions, workspace
+from . import agent, apply, bundle, net, sessions, workspace
 
 POLL_SEC = 10
 TURN_POLL_SEC = 1
@@ -118,14 +118,24 @@ def keys_dir() -> Path:
     return api_mod.CONFIG_PATH.parent / "keys"
 
 
+def report_bundle(path: Path, manifest: dict) -> None:
+    """What a bundle carries and what it left behind."""
+    for s in manifest["skipped"]:
+        _print(f"  skipped (looks like a credential): {s}")
+    if any(s.startswith("mcp:") for s in manifest["skipped"]):
+        _print("  (an MCP server with a literal token in its env or headers stays behind: store the token with "
+               "`ctransfer secret set NAME` and write ${NAME} in its config instead)")
+    if manifest.get("mcp_servers"):
+        _print(f"MCP servers: {', '.join(manifest['mcp_servers'])}")
+    _print(f"bundle: {path.stat().st_size / 1e6:.1f} MB, {manifest['record_count']} records, "
+           f"claude {manifest['claude_version']}")
+
+
 def build_push_bundle(path: Path, info: sessions.SessionInfo, *, home: Path, file_history: bool = True) -> dict:
     """A schedule's template: the session, user config, workspace and the agent. Returns its manifest."""
     manifest = bundle.build(path, kind="push", home=home, session_id=info.session_id, project_dir=info.project_dir,
                             cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history)
-    for s in manifest["skipped"]:
-        _print(f"  skipped (looks like a credential): {s}")
-    _print(f"bundle: {path.stat().st_size / 1e6:.1f} MB, {manifest['record_count']} records, "
-           f"claude {manifest['claude_version']}")
+    report_bundle(path, manifest)
     return manifest
 
 
@@ -138,6 +148,10 @@ def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = 
                             cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history,
                             extra={"prompt": prompt} if prompt else None)
 
+    resume_as = sessions.model_args(info.transcript)  # ["--model", model] plus ["--effort", level] if recorded
+    if resume_as:
+        effort = f" at {resume_as[3]} effort" if len(resume_as) == 4 else ""
+        _print(f"the session continues on {resume_as[1]}{effort}, as it last ran")
     return _send(api, info.session_id, info.cwd, build, remote_control=remote_control, wait=wait, keys=keys,
                  sleep=sleep, on_launch=on_launch)
 
@@ -178,10 +192,7 @@ def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, wait: 
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "ctransfer", "-f", str(key)], check=True)
         path = Path(tmp) / "push.tgz"
         manifest = build(path)
-        for s in manifest["skipped"]:
-            _print(f"  skipped (looks like a credential): {s}")
-        _print(f"bundle: {path.stat().st_size / 1e6:.1f} MB, {manifest['record_count']} records, "
-               f"claude {manifest['claude_version']}")
+        report_bundle(path, manifest)
         created = api.call("POST", "/sessions", {"session_id": session_id, "cwd": cwd,
                                                  "claude_version": manifest["claude_version"], "remote_control": remote_control,
                                                  "ssh_pubkey": key.with_suffix(".pub").read_text().strip()})
@@ -238,10 +249,13 @@ RETURN_NOTE = (
 
 
 def cmd_resume(args) -> None:
-    """claude --resume, told the session is back from the cloud (the counterpart of the VM's arrival note)."""
-    if not sessions.find_transcript(args.session_id):
+    """claude --resume on the model and effort the session last ran with, told it is back from the cloud (the
+    counterpart of the VM's arrival note)."""
+    transcript = sessions.find_transcript(args.session_id)
+    if not transcript:
         raise SystemExit(f"no local transcript for session {args.session_id}; pull it first")
-    os.execvp("claude", ["claude", "--resume", args.session_id, "--append-system-prompt", RETURN_NOTE])
+    os.execvp("claude", ["claude", "--resume", args.session_id, *sessions.model_args(transcript),
+                         "--append-system-prompt", RETURN_NOTE])
 
 
 def cmd_login(args) -> None:
@@ -264,14 +278,58 @@ def cmd_token(args) -> None:
     if args.action == "rm":
         api.call("DELETE", "/me/claude-token")
         return
+    token = _read_secret("token from `claude setup-token`: ")
+    api.call("PUT", "/me/claude-token", {"token": token.strip()})
+    _print("Claude token saved; your VMs will run on it")
+
+
+def _read_secret(prompt: str) -> str:
+    """A secret from stdin when piped, else typed at a hidden prompt (never a command-line argument, which shell
+    history and process listings keep)."""
     if sys.stdin.isatty():
         import getpass
 
-        token = getpass.getpass("token from `claude setup-token`: ")
-    else:
-        token = sys.stdin.read()
-    api.call("PUT", "/me/claude-token", {"token": token.strip()})
-    _print("Claude token saved; your VMs will run on it")
+        return getpass.getpass(prompt)
+    return sys.stdin.read()
+
+
+def cmd_secret_set(args) -> None:
+    value = _read_secret(f"value for {args.name}: ").strip()
+    if not value:
+        raise SystemExit("empty value; to remove a secret use `ctransfer secret rm`")
+    api_mod.Api.from_config().call("PUT", f"/me/secrets/{args.name}", {"value": value})
+    _print(f"{args.name} saved. VMs launched from now on get it as an environment variable "
+           f"(MCP server configs can use ${{{args.name}}}).")
+    if args.name in agent.GITHUB_TOKEN_NAMES:
+        _print("git and gh on those VMs use it for github.com (pushes, pull requests).")
+
+
+def cmd_secret_ls(args) -> None:
+    for s in api_mod.Api.from_config().call("GET", "/me/secrets")["secrets"]:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(s["updated_at"])) if s.get("updated_at") else ""
+        print(f"{s['name']:<32} {when}")
+
+
+def cmd_secret_rm(args) -> None:
+    api_mod.Api.from_config().call("DELETE", f"/me/secrets/{args.name}")
+    _print(f"{args.name} removed; VMs launched from now on won't get it (running ones keep their copy)")
+
+
+def add_secret_parser(sub) -> None:
+    secret = sub.add_parser(
+        "secret", help="environment variables your VMs get, e.g. GITHUB_TOKEN for git push and gh",
+        description="Secrets are stored encrypted by the control plane and given to each VM you launch afterwards, "
+                    "as environment variables of its claude (and of MCP servers it starts). A GitHub token named "
+                    "GH_TOKEN or GITHUB_TOKEN also sets up git and gh for github.com; prefer a fine-grained token "
+                    "limited to the repos and permissions the VM needs.")
+    ssub = secret.add_subparsers(dest="secret_cmd", required=True)
+    p = ssub.add_parser("set", help="store a secret; the value is read from stdin or a hidden prompt")
+    p.add_argument("name", help="environment variable name, e.g. GITHUB_TOKEN")
+    p.set_defaults(fn=cmd_secret_set)
+    ssub.add_parser("ls", help="list your secrets' names (values are never shown)").set_defaults(fn=cmd_secret_ls)
+    p = ssub.add_parser("rm", help="delete a secret")
+    p.add_argument("name")
+    p.set_defaults(fn=cmd_secret_rm)
 
 
 def prompt_arg(args) -> str | None:
@@ -638,6 +696,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("token", help="store (set, read from stdin) or delete (rm) the Claude token your VMs run on")
     p.add_argument("action", choices=("set", "rm"))
     p.set_defaults(fn=cmd_token)
+    add_secret_parser(sub)
 
     def session_args(p):
         p.add_argument("--session", help="session id (default: newest session for --cwd)")

@@ -12,7 +12,7 @@ import pytest
 
 from ctransfer import api as api_mod
 from ctransfer import cli, sessions
-from tests.conftest import configure_signed_in, write_transcript
+from tests.conftest import add_replies, configure_signed_in, write_transcript
 
 
 def configure():
@@ -97,6 +97,7 @@ def test_detached_push_hands_the_prompt_to_its_worker(laptop):
 
 
 def test_resume_tells_claude_the_session_is_back(laptop, tmp_path):
+    last_ran_with = add_replies(laptop["transcript"], laptop["sid"], str(laptop["repo"]))
     bindir = tmp_path / "bin"  # a stand-in claude that prints the argv it was exec'd with
     bindir.mkdir()
     (bindir / "claude").write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
@@ -104,7 +105,7 @@ def test_resume_tells_claude_the_session_is_back(laptop, tmp_path):
     out = subprocess.run([sys.executable, "-m", "ctransfer.cli", "resume", laptop["sid"]], capture_output=True, text=True,
                          env={**os.environ, "PATH": f"{bindir}:/usr/bin:/bin"}, check=True).stdout
     argv = json.loads(out)
-    assert argv[:2] == ["--resume", laptop["sid"]]
+    assert argv[:6] == ["--resume", laptop["sid"], *last_ran_with]
     note = argv[argv.index("--append-system-prompt") + 1]
     assert "back from a cloud VM" in note and "complete" in note
 

@@ -29,7 +29,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import bundle, net, sessions, workspace
+from . import bundle, mcp, net, sessions, workspace
 
 STATE_PATH = Path("/var/lib/ctransfer/state.json")
 AGENT_DIR = Path("/opt/ctransfer/agent")
@@ -78,9 +78,10 @@ def _first_missing_ancestor(path: Path) -> Path | None:
     return missing
 
 
-def _write_global_config(path: Path, trusted: list[str]) -> None:
+def _write_global_config(path: Path, trusted: list[str], carried_mcp: dict, root_prefix: str = "") -> None:
     cfg = json.loads(path.read_text()) if path.exists() else {}
     cfg["hasCompletedOnboarding"] = True
+    mcp.install(cfg, carried_mcp, root_prefix)
     projects = cfg.setdefault("projects", {})
     for p in trusted:
         projects.setdefault(p, {})["hasTrustDialogAccepted"] = True
@@ -103,7 +104,8 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
     vm_cwd = root_prefix + cwd
     created_top = _first_missing_ancestor(vm_root)
     workspace.restore_fresh(ws, bundle_dir / "workspace", vm_root)
-    _write_global_config(home / ".claude.json", sorted({vm_cwd, str(vm_root)}))
+    carried_mcp = json.loads((bundle_dir / "mcp.json").read_text()) if (bundle_dir / "mcp.json").exists() else {}
+    _write_global_config(home / ".claude.json", sorted({vm_cwd, str(vm_root)}), carried_mcp, root_prefix)
 
     ssh_dir = None
     if boot.get("ssh_pubkey"):
@@ -125,14 +127,74 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
         "user": user, "restored_at": time.time(), "new": manifest["kind"] == "new",
         "run": boot.get("run"),  # a scheduled run's task, else None
     }
+    secrets = boot.get("secrets") or {}
+    github = _setup_github(home, user, secrets)
     if launch:
+        _write_env(home, user, boot["claude_token"], secrets)
         _install_claude(user, boot.get("claude_version"))
+        if github:
+            _install_gh()
         if boot.get("run"):
             state["workspace_update"] = _update_workspace(state, ws)
-            _launch_run(state, home, boot["claude_token"], boot["run"])
+            _launch_run(state, home, boot["run"])
         else:
-            _launch(state, home, boot["claude_token"], bool(boot.get("remote_control")), manifest.get("prompt"))
+            _launch(state, home, bool(boot.get("remote_control")), manifest.get("prompt"))
     return state
+
+
+def _write_env(home: Path, user: str | None, claude_token: str, secrets: dict[str, str]) -> None:
+    """~/.ctransfer/env (0600): the user's secrets and the Claude token, as the launcher and git's credential helper
+    source them. The control plane refuses secrets named like the token, so the token line is the only one."""
+    ctl = home / ".ctransfer"
+    ctl.mkdir(mode=0o700, exist_ok=True)
+    env_file = ctl / "env"
+    lines = [f"{name}={shlex.quote(value)}" for name, value in sorted(secrets.items())]
+    lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={shlex.quote(claude_token)}")
+    env_file.write_text("\n".join(lines) + "\n")
+    env_file.chmod(0o600)
+    if user:
+        subprocess.run(["chown", "-R", f"{user}:{user}", str(ctl)], check=True)
+
+
+# The secret names gh reads a token from, in its order of preference; git's credential helper follows the same order.
+GITHUB_TOKEN_NAMES = ("GH_TOKEN", "GITHUB_TOKEN")
+GIT_CREDENTIAL_HELPER = """#!/bin/bash
+# git credential helper written by ctransfer: answers for https://github.com with the GitHub token in ~/.ctransfer/env.
+[ "$1" = get ] || exit 0
+set -a; . {env}; set +a
+echo username=x-access-token
+echo "password=${{GH_TOKEN:-$GITHUB_TOKEN}}"
+"""
+
+
+def _setup_github(home: Path, user: str | None, secrets: dict[str, str]) -> bool:
+    """With a GitHub token among the secrets, point git at it for github.com: a credential helper that reads the token
+    from ~/.ctransfer/env, and SSH remote URLs rewritten to HTTPS so pushes go through the helper (the VM has no SSH
+    key for GitHub). gh reads the same token from the environment claude runs in. Returns whether it was set up."""
+    if not any(secrets.get(name) for name in GITHUB_TOKEN_NAMES):
+        return False
+    ctl = home / ".ctransfer"
+    ctl.mkdir(mode=0o700, exist_ok=True)
+    helper = ctl / "git-credential-github"
+    helper.write_text(GIT_CREDENTIAL_HELPER.format(env=shlex.quote(str(ctl / "env"))))
+    helper.chmod(0o700)
+    gitconfig = home / ".gitconfig"
+    subprocess.run(["git", "config", "--file", str(gitconfig), "credential.https://github.com.helper", str(helper)],
+                   check=True)
+    for ssh_form in ("git@github.com:", "ssh://git@github.com/"):
+        subprocess.run(["git", "config", "--file", str(gitconfig), "--add", "url.https://github.com/.insteadOf", ssh_form],
+                       check=True)
+    if user:
+        subprocess.run(["chown", "-R", f"{user}:{user}", str(ctl), str(gitconfig)], check=True)
+    return True
+
+
+def _install_gh() -> None:
+    """The GitHub CLI, for opening and answering pull requests. Best effort: a session without it still runs."""
+    out = subprocess.run(_as_user(None, "DEBIAN_FRONTEND=noninteractive apt-get install -y -q gh"),
+                         capture_output=True, text=True)
+    if out.returncode:
+        print(f"ctransfer agent: installing gh failed: {out.stderr.strip()[-500:]}", file=sys.stderr, flush=True)
 
 
 def _install_claude(user: str | None, version: str | None) -> None:
@@ -157,25 +219,27 @@ def new_session_note(transfer_id: str) -> str:
             f"session back by running `ctransfer pull {transfer_id}` on their laptop.")
 
 
+def transcript_path(state: dict) -> Path:
+    return Path(state["claude_home"]) / "projects" / state["project_dir"] / f"{state['session_id']}.jsonl"
+
+
 def claude_args(state: dict, *, remote_control: bool = False, prompt: str | None = None) -> list[str]:
-    """How the VM starts claude: resume the pushed session, or start the new one under its pre-chosen id."""
+    """How the VM starts claude: resume the pushed session on the model and effort it last ran with, or start the new
+    one under its pre-chosen id."""
     if state["new"]:
         args = ["--session-id", state["session_id"], "--append-system-prompt", new_session_note(state["transfer_id"])]
     else:
-        args = ["--resume", state["session_id"], "--append-system-prompt", arrival_note(state["transfer_id"])]
+        args = ["--resume", state["session_id"], *sessions.model_args(transcript_path(state)),
+                "--append-system-prompt", arrival_note(state["transfer_id"])]
     if remote_control:
         args.append("--remote-control")
     return args + [prompt] if prompt else args
 
 
-def _write_launcher(state: dict, home: Path, claude_token: str, body: str) -> Path:
-    """~/.ctransfer/launch.sh: loads the Claude token from ~/.ctransfer/env, cds to the session's cwd, runs body."""
-    ctl = home / ".ctransfer"
-    ctl.mkdir(mode=0o700, exist_ok=True)
-    env_file = ctl / "env"
-    env_file.write_text(f"CLAUDE_CODE_OAUTH_TOKEN={claude_token}\n")
-    env_file.chmod(0o600)
-    launcher = ctl / "launch.sh"
+def _write_launcher(state: dict, home: Path, body: str) -> Path:
+    """~/.ctransfer/launch.sh: exports ~/.ctransfer/env (the Claude token and the user's secrets, which MCP server
+    configs can reference as ${NAME}), cds to the session's cwd, runs body."""
+    launcher = home / ".ctransfer" / "launch.sh"
     launcher.write_text("#!/bin/bash\nset -a; . \"$HOME/.ctransfer/env\"; set +a\n"
                         f"cd {json.dumps(state['vm_cwd'])}\n{body}\n")
     launcher.chmod(0o700)
@@ -192,9 +256,9 @@ def _start_in_tmux(state: dict, home: Path, launcher: Path, *, status_hint: str 
     subprocess.run(_as_user(state["user"], cmd), check=True)
 
 
-def _launch(state: dict, home: Path, claude_token: str, remote_control: bool, prompt: str | None = None) -> None:
+def _launch(state: dict, home: Path, remote_control: bool, prompt: str | None = None) -> None:
     args = claude_args(state, remote_control=remote_control, prompt=prompt)
-    launcher = _write_launcher(state, home, claude_token, f"exec \"$HOME/.local/bin/claude\" {shlex.join(args)}")
+    launcher = _write_launcher(state, home, f"exec \"$HOME/.local/bin/claude\" {shlex.join(args)}")
     _start_in_tmux(state, home, launcher, status_hint=DETACH_HINT)
 
 
@@ -203,7 +267,7 @@ def run_dir(home: Path) -> Path:
     return home / ".ctransfer" / "run"
 
 
-def _launch_run(state: dict, home: Path, claude_token: str, run: dict) -> None:
+def _launch_run(state: dict, home: Path, run: dict) -> None:
     """One headless turn on a fork of the pushed session: --fork-session writes the turn to a new transcript, so
     the pushed one (every run's starting point) never grows. A coreutils timeout bounds the run."""
     out = run_dir(home)
@@ -211,9 +275,10 @@ def _launch_run(state: dict, home: Path, claude_token: str, run: dict) -> None:
     claude = " ".join([
         f"timeout --kill-after=30 {int(run['timeout_sec'])}", "\"$HOME/.local/bin/claude\"",
         "-p", shlex.quote(run["prompt"]), "--resume", state["session_id"], "--fork-session",
+        shlex.join(sessions.model_args(transcript_path(state))),
         "--output-format", "json", "--permission-mode", shlex.quote(run.get("permission_mode") or "default"),
         "--append-system-prompt", shlex.quote(run["note"])])
-    launcher = _write_launcher(state, home, claude_token,
+    launcher = _write_launcher(state, home,
                                f"{claude} > \"$HOME/.ctransfer/run/result.json\" 2> \"$HOME/.ctransfer/run/stderr.log\"\n"
                                "echo $? > \"$HOME/.ctransfer/run/exit_code\"")
     _start_in_tmux(state, home, launcher)
@@ -221,7 +286,8 @@ def _launch_run(state: dict, home: Path, claude_token: str, run: dict) -> None:
 
 def _update_workspace(state: dict, ws: dict) -> str:
     """Fast-forward the pushed branch from its remote (origin, else the first one), so a run sees what landed since
-    the push. Best effort: the VM has no git credentials, so private remotes stay at the pushed snapshot."""
+    the push. Best effort: without a GitHub token secret the VM has no git credentials, so private remotes stay at the
+    pushed snapshot."""
     remotes = sorted(ws.get("remotes") or {}, key=lambda name: name != "origin")
     if ws.get("kind") != "git" or not ws.get("branch") or not remotes:
         return "not updated: no branch with a remote"
@@ -365,7 +431,7 @@ def main(argv=None) -> None:
         args.state.parent.mkdir(parents=True, exist_ok=True)
         args.state.write_text(json.dumps(state))
         args.state.chmod(0o600)
-        args.boot.unlink()  # held the Claude token; it now lives only in the user's ~/.ctransfer/env
+        args.boot.unlink()  # held the Claude token and secrets; they now live only in the user's ~/.ctransfer/env
         shutil.rmtree(args.bundle_dir, ignore_errors=True)
         if not args.manual:
             agent = Agent(state)

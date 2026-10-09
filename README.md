@@ -73,6 +73,38 @@ With a prompt, `push` starts the VM's `claude --resume` with it, so the session 
 
 Untracked credential-looking files (`.env`, `*.pem`, `id_rsa*`, `*.tfvars`, …) are never uploaded. Pull leaves them alone.
 
+## Credentials on the VM
+
+The VM gets your Claude token and nothing else unless you store more. To give it credentials (a GitHub token, API keys for your MCP servers, ...), store them as secrets:
+
+```bash
+ctransfer secret set GITHUB_TOKEN      # value from a hidden prompt, or piped: ... | ctransfer secret set NAME
+ctransfer secret ls                    # names only; values are never shown again
+ctransfer secret rm GITHUB_TOKEN
+```
+
+- Every VM launched afterwards (pushes, `new`, scheduled runs) gets each secret as an environment variable of its `claude`, and so of the commands and MCP servers it starts. A VM that is already running keeps what it was given.
+- Secrets are SSM SecureStrings on the control plane. The api can store and delete them but not read them back; only the function that bootstraps a VM reads them, once per VM. On the VM they live in `~/.ctransfer/env` (mode 0600). They are never part of a bundle.
+- Names are environment variable names (`A-Z`, `0-9`, `_`). `CLAUDE_CODE_OAUTH_TOKEN` and `CTRANSFER_*` are reserved.
+
+### GitHub
+
+A secret named `GITHUB_TOKEN` or `GH_TOKEN` also sets up GitHub on the VM:
+- git uses it for `https://github.com`, through a credential helper that reads `~/.ctransfer/env`. Remotes written as `git@github.com:...` are rewritten to HTTPS, so pushes work without an SSH key.
+- `gh` is installed and picks the token up from the environment, so the session can open, review and comment on pull requests.
+- Commits on the VM carry the author from your repo's git config (`user.name`, `user.email`).
+
+Prefer a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) limited to the repositories the VM works on, with Contents and Pull requests read/write. `gh auth token | ctransfer secret set GITHUB_TOKEN` also works, but hands the VM your laptop login's full scope.
+
+### MCP servers
+
+A push carries your MCP server configs along with the session:
+- user-scope servers (`claude mcp add -s user`) and this project's local-scope ones (the default scope), from `~/.claude.json`, plus the project's choices about the servers in its `.mcp.json`. The `.mcp.json` itself is part of the workspace.
+- A server whose `env` or `headers` contain a literal credential (a key named like `*TOKEN*`, `*KEY*`, `Authorization`, ...) stays on the laptop, and the push says so. Store the value as a secret and reference it instead: `"env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"}`. Claude Code expands `${NAME}` from its environment, which on the VM holds your secrets.
+- Servers that sign in with OAuth (most remote ones) have their tokens in your laptop's keychain. Those tokens don't move, so these servers need authenticating again on the VM.
+- Stdio servers run on the VM, so their command must exist there (the VM has Python 3; there is no Node.js unless the session installs it).
+- claude.ai connectors (the ones listed as `claude.ai <name>` in `claude mcp list`) are not available on the VM: they come with a full claude.ai sign-in, and the VM runs on the narrower `claude setup-token` token. Add the servers you need as user- or local-scope MCP servers instead.
+
 ## Scheduled runs
 
 `ctransfer cron` snapshots a session once, then runs a task on it on a cron schedule. Each run gets its own short-lived VM:
@@ -87,7 +119,7 @@ ctransfer cron rm <schedule-id>
 ```
 
 How a run works:
-- The VM boots from the snapshot taken by `cron add`, fast-forwards the branch from its remote (public remotes only, since the VM has no git credentials), and runs one headless turn: `claude -p <task> --resume <session> --fork-session`.
+- The VM boots from the snapshot taken by `cron add`, fast-forwards the branch from its remote (public remotes only, unless a GitHub token secret lets the VM read private ones), and runs one headless turn: `claude -p <task> --resume <session> --fork-session`.
 - Every run forks the same snapshot, so runs never add to each other's context and the session stays the size it was when you pushed it. To keep some continuity, each run's system prompt includes short summaries of the last five runs (400 characters each, about 2 KB in all).
 - Edits on the VM are thrown away when the run ends unless the task commits and pushes them.
 - Runs can't ask for permission. `--permission-mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`) sets the mode. With `default`, the allow rules in your `settings.json` apply, and `cron logs` shows how many tool calls were denied.
