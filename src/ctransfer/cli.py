@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 
 from . import api as api_mod
-from . import apply, bundle, net, sessions, workspace
+from . import agent, apply, bundle, net, sessions, workspace
 
 POLL_SEC = 10
 TURN_POLL_SEC = 1
@@ -271,14 +271,58 @@ def cmd_token(args) -> None:
     if args.action == "rm":
         api.call("DELETE", "/me/claude-token")
         return
+    token = _read_secret("token from `claude setup-token`: ")
+    api.call("PUT", "/me/claude-token", {"token": token.strip()})
+    _print("Claude token saved; your VMs will run on it")
+
+
+def _read_secret(prompt: str) -> str:
+    """A secret from stdin when piped, else typed at a hidden prompt (never a command-line argument, which shell
+    history and process listings keep)."""
     if sys.stdin.isatty():
         import getpass
 
-        token = getpass.getpass("token from `claude setup-token`: ")
-    else:
-        token = sys.stdin.read()
-    api.call("PUT", "/me/claude-token", {"token": token.strip()})
-    _print("Claude token saved; your VMs will run on it")
+        return getpass.getpass(prompt)
+    return sys.stdin.read()
+
+
+def cmd_secret_set(args) -> None:
+    value = _read_secret(f"value for {args.name}: ").strip()
+    if not value:
+        raise SystemExit("empty value; to remove a secret use `ctransfer secret rm`")
+    api_mod.Api.from_config().call("PUT", f"/me/secrets/{args.name}", {"value": value})
+    _print(f"{args.name} saved. VMs launched from now on get it as an environment variable "
+           f"(MCP server configs can use ${{{args.name}}}).")
+    if args.name in agent.GITHUB_TOKEN_NAMES:
+        _print("git and gh on those VMs use it for github.com (pushes, pull requests).")
+
+
+def cmd_secret_ls(args) -> None:
+    for s in api_mod.Api.from_config().call("GET", "/me/secrets")["secrets"]:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(s["updated_at"])) if s.get("updated_at") else ""
+        print(f"{s['name']:<32} {when}")
+
+
+def cmd_secret_rm(args) -> None:
+    api_mod.Api.from_config().call("DELETE", f"/me/secrets/{args.name}")
+    _print(f"{args.name} removed; VMs launched from now on won't get it (running ones keep their copy)")
+
+
+def add_secret_parser(sub) -> None:
+    secret = sub.add_parser(
+        "secret", help="environment variables your VMs get, e.g. GITHUB_TOKEN for git push and gh",
+        description="Secrets are stored encrypted by the control plane and given to each VM you launch afterwards, "
+                    "as environment variables of its claude (and of MCP servers it starts). A GitHub token named "
+                    "GH_TOKEN or GITHUB_TOKEN also sets up git and gh for github.com; prefer a fine-grained token "
+                    "limited to the repos and permissions the VM needs.")
+    ssub = secret.add_subparsers(dest="secret_cmd", required=True)
+    p = ssub.add_parser("set", help="store a secret; the value is read from stdin or a hidden prompt")
+    p.add_argument("name", help="environment variable name, e.g. GITHUB_TOKEN")
+    p.set_defaults(fn=cmd_secret_set)
+    ssub.add_parser("ls", help="list your secrets' names (values are never shown)").set_defaults(fn=cmd_secret_ls)
+    p = ssub.add_parser("rm", help="delete a secret")
+    p.add_argument("name")
+    p.set_defaults(fn=cmd_secret_rm)
 
 
 def prompt_arg(args) -> str | None:
@@ -645,6 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("token", help="store (set, read from stdin) or delete (rm) the Claude token your VMs run on")
     p.add_argument("action", choices=("set", "rm"))
     p.set_defaults(fn=cmd_token)
+    add_secret_parser(sub)
 
     def session_args(p):
         p.add_argument("--session", help="session id (default: newest session for --cwd)")

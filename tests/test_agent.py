@@ -197,3 +197,58 @@ def test_scheduled_run_forks_the_session_headlessly_and_reports_its_result(lapto
     assert argv[:5] == ["-p", run["prompt"], "--resume", info.session_id, "--fork-session"]
     assert argv[5:9] == last_ran_with and argv[argv.index("--permission-mode") + 1] == "acceptEdits"
     assert argv[argv.index("--append-system-prompt") + 1] == "unattended run 3"
+
+
+def test_secrets_reach_claude_and_a_github_token_lets_git_and_gh_use_github(laptop, tmp_path, monkeypatch):
+    """The user's stored secrets become claude's environment on the VM. A GitHub token also gets git pushing to
+    github.com over HTTPS (SSH remotes included) with the laptop's commit identity, and gh installed."""
+    run_git(laptop["repo"], "remote", "add", "fork", "git@github.com:me/repo.git")
+    info = sessions.discover(session_id=laptop["sid"])
+    b = tmp_path / "push.tgz"
+    bundle.build(b, kind="push", home=laptop["home"], session_id=info.session_id, project_dir=info.project_dir,
+                 cwd=info.cwd, include_config=True, include_agent=True)
+    bundle.extract(b, tmp_path / "bundle")
+    shutil.rmtree(laptop["repo"])
+    vm_home = tmp_path / "vm" / "home"
+    vm_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(vm_home))
+    secrets = {"GITHUB_TOKEN": "github_pat_test", "ODD": "it's \"$quoted\" `and` spaced\nover lines"}
+    boot = tmp_path / "boot.json"
+    boot.write_text(json.dumps({**BOOT, "agent_url": "", "secrets": secrets}))
+    external, real_run = [], subprocess.run
+
+    def intercept(cmd, **kw):
+        if any(x in cmd[-1] for x in ("install.sh", "tmux ", "apt-get")):
+            external.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(agent.subprocess, "run", intercept)
+    agent.main(["restore", "--boot", str(boot), "--bundle-dir", str(tmp_path / "bundle"), "--user", "",
+                "--state", str(tmp_path / "state.json"), "--manual"])
+    assert any("apt-get install -y -q gh" in c for c in external)
+    assert "github_pat_test" not in (tmp_path / "state.json").read_text()
+
+    stub = vm_home / ".local" / "bin" / "claude"  # prints the secrets it sees in its environment
+    stub.parent.mkdir(parents=True)
+    stub.write_text(f"#!{sys.executable}\nimport json, os\n"
+                    "print(json.dumps({k: os.environ.get(k) for k in ('GITHUB_TOKEN', 'ODD', 'CLAUDE_CODE_OAUTH_TOKEN')}))\n")
+    stub.chmod(0o755)
+    env = {"HOME": str(vm_home), "PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+    out = real_run(["bash", str(vm_home / ".ctransfer" / "launch.sh")], env=env, capture_output=True, text=True,
+                   check=True).stdout
+    assert json.loads(out) == {**secrets, "CLAUDE_CODE_OAUTH_TOKEN": BOOT["claude_token"]}
+
+    repo = Path(info.cwd)
+    fill = real_run(["git", "-C", str(repo), "credential", "fill"], input="protocol=https\nhost=github.com\n\n",
+                    env=env, capture_output=True, text=True, check=True).stdout
+    assert "username=x-access-token" in fill and "password=github_pat_test" in fill
+    assert real_run(["git", "-C", str(repo), "remote", "get-url", "fork"], env=env, capture_output=True, text=True,
+                    check=True).stdout.strip() == "https://github.com/me/repo.git"
+    assert run_git(repo, "config", "user.email") == "t@example.com"
+
+
+def test_without_a_github_token_git_is_left_alone(laptop, tmp_path):
+    _, vm_home, state = push_and_restore(laptop, tmp_path)
+    assert not (vm_home / ".gitconfig").exists()
+    assert run_git(state["vm_root"], "config", "user.name") == "t"  # commits still carry the laptop's identity

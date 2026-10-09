@@ -98,7 +98,10 @@ def _capture_git(root: Path, out: Path) -> dict:
                 tf.add(root / u, arcname=u, recursive=False)
 
     remotes = {name: git(root, "remote", "get-url", name).strip() for name in git(root, "remote").split()}
-    return {"kind": "git", "root": str(root), "head": head, "branch": branch, "remotes": remotes, "skipped": sorted(skipped)}
+    # Who commits here (from the repo's or the user's git config), so commits made on the VM carry the same author.
+    identity = {key: value for key in ("name", "email") if (value := _try_git(root, "config", f"user.{key}"))}
+    return {"kind": "git", "root": str(root), "head": head, "branch": branch, "remotes": remotes, "identity": identity,
+            "skipped": sorted(skipped)}
 
 
 def _capture_tree(root: Path, out: Path) -> dict:
@@ -150,6 +153,8 @@ def restore_fresh(meta: dict, src, root) -> None:
         git(root, "checkout", "-q", "--detach", meta["head"])
     for name, url in (meta.get("remotes") or {}).items():
         git(root, "remote", "add", name, url)
+    for key, value in (meta.get("identity") or {}).items():
+        git(root, "config", f"user.{key}", value)
     _apply_dirty(root, src)
 
 
