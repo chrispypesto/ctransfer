@@ -103,6 +103,7 @@ A push carries your MCP server configs along with the session:
 - A server whose `env` or `headers` contain a literal credential (a key named like `*TOKEN*`, `*KEY*`, `Authorization`, ...) stays on the laptop, and the push says so. Store the value as a secret and reference it instead: `"env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"}`. Claude Code expands `${NAME}` from its environment, which on the VM holds your secrets.
 - Servers that sign in with OAuth (most remote ones) have their tokens in your laptop's keychain. Those tokens don't move, so these servers need authenticating again on the VM.
 - Stdio servers run on the VM, so their command must exist there (the VM has Python 3; there is no Node.js unless the session installs it).
+- claude.ai connectors (the ones listed as `claude.ai <name>` in `claude mcp list`) are not available on the VM: they come with a full claude.ai sign-in, and the VM runs on the narrower `claude setup-token` token. Add the servers you need as user- or local-scope MCP servers instead.
 
 ## Scheduled runs
 
