@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -457,7 +458,14 @@ def cmd_ssh(args) -> None:
     if not key.exists():
         raise SystemExit(f"no key at {key}: ssh only works from the machine that pushed")
     known_hosts = api_mod.CONFIG_PATH.parent / "known_hosts"
-    remote = "tmux attach -t claude || bash -l" if not args.command else args.command
+    tid = args.transfer_id
+    if args.command:
+        remote = args.command
+    else:
+        _print(f"attaching to the claude of {tid}. To leave, press Ctrl-b then d: claude keeps running in the cloud.\n"
+               f"Quitting claude there (/exit) stops it on the VM; bring the session back with: ctransfer pull {tid}")
+        gone = f"claude is no longer running on this VM. Bring the session back with: ctransfer pull {tid}"
+        remote = f"tmux attach -t claude || {{ echo {shlex.quote(gone)}; echo 'This is a shell on the VM; exit leaves.'; exec bash -l; }}"
     cmd = ["ssh", "-i", str(key), "-o", f"UserKnownHostsFile={known_hosts}", "-o", "StrictHostKeyChecking=accept-new",
            "-t", f"ubuntu@{ip}", remote]
     os.execvp("ssh", cmd)
@@ -650,7 +658,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--current", action="store_true", help="the Claude Code session running this command (default)")
     p.set_defaults(fn=cmd_status)
 
-    p = sub.add_parser("ssh", help="attach to a cloud session's claude")
+    p = sub.add_parser("ssh", help="attach to a cloud session's claude (Ctrl-b then d detaches; it keeps running)")
     p.add_argument("transfer_id")
     p.add_argument("command", nargs="?", help="run this on the VM instead of attaching")
     p.set_defaults(fn=cmd_ssh)

@@ -52,13 +52,15 @@ ctransfer push [--remote-control]  # the newest session in this directory (it na
 ctransfer push "keep going, then run the tests"   # same, and the VM's claude starts on this right away
 #   then /exit the local session: continuing locally makes the two copies diverge
 ctransfer new ["first prompt"]     # start a fresh session on a VM in a copy of this directory
-ctransfer ssh <transfer-id>        # attach to the VM's `claude` tmux session (Ctrl-b d to detach)
+ctransfer ssh <transfer-id>        # attach to the VM's claude; Ctrl-b then d detaches and leaves it running
 ctransfer ls | status <id> | usage
 ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
 ctransfer resume <session-id>      # carry on locally (claude --resume, told the session is back)
 ```
 
 With a prompt, `push` starts the VM's `claude --resume` with it, so the session gets to work without anyone attaching. Without one it waits idle in tmux for `ctransfer ssh`.
+
+`ssh` runs claude in tmux on the VM, and the tmux status bar shows how to detach. Quitting claude there (`/exit`) stops it on the VM; the session is still there to `pull`.
 
 `push --current` targets the Claude Code session running the command. `push --when-idle --detach` waits for that session's turn to end in a background worker, which is what `/ctransfer` uses.
 
