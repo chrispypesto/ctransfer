@@ -472,13 +472,27 @@ def cmd_ssh(args) -> None:
 
 
 def cmd_usage(args) -> None:
+    """This user's standing against their own allowance, and whether a launch would go through right now."""
     u = api_mod.Api.from_config().call("GET", "/me/usage")
     limits = u.get("limits") or {}
 
-    def of(key):
-        return f" of {limits[key]}" if key in limits else ""
-    print(f"{u['month']}: {u['billed_hours'] + u['open_hours']}{of('monthly_vm_hours')} VM-hours "
-          f"({u['open_hours']} on running VMs), {u['launches']} launches, {u['bytes'] / 1e6:.0f}{of('monthly_mb')} MB transferred")
+    def of(key, unit=""):
+        return f" of {limits[key]:g}{unit}" if key in limits else unit
+
+    lines = [f"your free tier this month ({u['month']}):",
+             f"  VM-hours     {u['billed_hours'] + u['open_hours']}{of('monthly_vm_hours')} "
+             f"({u['open_hours']} on VMs still running)",
+             f"  transferred  {u['bytes'] / 1e6:.0f}{of('monthly_mb', ' MB')}"]
+    if "launches_today" in u:  # older control planes report only the month's launches
+        lines.append(f"  launches     {u['launches_today']} today{of('daily_launches', ' a day')}")
+    else:
+        lines.append(f"  launches     {u['launches']} this month")
+    if "running_vms" in u:
+        lines.append(f"  VMs running  {u['running_vms']}{of('vms')}")
+    if "launch_refusal" in u:
+        lines.append(f"you can't launch a VM now: {u['launch_refusal']}" if u["launch_refusal"]
+                     else "you can launch a VM now")
+    print("\n".join(lines))
 
 
 def cmd_rm(args) -> None:
@@ -680,7 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_cron_parser(sub, session_args)
 
-    sub.add_parser("usage", help="your free-tier usage this month").set_defaults(fn=cmd_usage)
+    sub.add_parser("usage", help="your free-tier usage this month, and whether you can launch now").set_defaults(fn=cmd_usage)
     sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
     return ap
 
