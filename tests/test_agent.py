@@ -71,6 +71,7 @@ def test_manual_restore_launches_claude_told_the_transfer_is_complete(laptop, tm
     assert not boot.exists() and not (tmp_path / "bundle").exists()  # the token-bearing boot file is gone
     assert json.loads((tmp_path / "state.json").read_text())["session_id"] == info.session_id
     assert [c.split()[0] for c in external] == ["curl", "tmux"]  # no systemd agent in manual mode
+    assert agent.DETACH_HINT.strip() in external[1]  # whoever attaches sees how to leave
     assert (Path(info.cwd) / "app.py").read_text() == "print('v2 uncommitted')\n"
 
     stub = vm_home / ".local" / "bin" / "claude"  # prints the argv the launcher passes to claude

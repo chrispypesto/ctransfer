@@ -2,7 +2,7 @@
 
 Move a live Claude Code session from your laptop to a cloud VM, keep working there, and pull it back. The transfer is verbatim: the transcript, `/rewind` checkpoints, project memory, and the workspace, including uncommitted and untracked changes.
 
-This repo has the client (the `ctransfer` CLI and the agent it ships to the VM) and the `/ctransfer` Claude Code plugin. The client talks to the hosted control plane at `https://api.ctransfer.itschrispy.com` (AWS Lambda, Aurora DSQL, S3, SSM, Lightsail); `ctransfer configure --api-url <url>` or `CTRANSFER_API_URL` points it at another deployment. The control plane's code and Terraform aren't published yet.
+This repo has the client (the `ctransfer` CLI and the agent it ships to the VM) and the `/ctransfer` Claude Code plugin. The client talks to the hosted control plane at `https://api.ctransfer.itschrispy.com` (AWS Lambda, Aurora DSQL, S3, SSM, Lightsail). For development against another deployment, set `CTRANSFER_API_URL`. The control plane's code and Terraform aren't published yet.
 
 ## Install
 
@@ -48,18 +48,19 @@ What `/ctransfer` does:
 ## CLI
 
 ```bash
-ctransfer discover                 # which session would be pushed (newest one for this directory)
-ctransfer push [--remote-control]  # bundle, upload, launch, wait until the VM is running
+ctransfer push [--remote-control]  # the newest session in this directory (it names it), to a VM; waits until running
 ctransfer push "keep going, then run the tests"   # same, and the VM's claude starts on this right away
 #   then /exit the local session: continuing locally makes the two copies diverge
 ctransfer new ["first prompt"]     # start a fresh session on a VM in a copy of this directory
-ctransfer ssh <transfer-id>        # attach to the VM's `claude` tmux session (Ctrl-b d to detach)
-ctransfer ls | status <id>
+ctransfer ssh <transfer-id>        # attach to the VM's claude; Ctrl-b then d detaches and leaves it running
+ctransfer ls | status <id> | usage
 ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
 ctransfer resume <session-id>      # carry on locally (claude --resume, told the session is back)
 ```
 
 With a prompt, `push` starts the VM's `claude --resume` with it, so the session gets to work without anyone attaching. Without one it waits idle in tmux for `ctransfer ssh`.
+
+`ssh` runs claude in tmux on the VM, and the tmux status bar shows how to detach. Quitting claude there (`/exit`) stops it on the VM; the session is still there to `pull`.
 
 `push --current` targets the Claude Code session running the command. `push --when-idle --detach` waits for that session's turn to end in a background worker, which is what `/ctransfer` uses.
 

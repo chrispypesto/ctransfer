@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -220,12 +221,6 @@ def cmd_pull(args) -> None:
     _report_pull(result)
 
 
-def cmd_apply(args) -> None:
-    with tempfile.TemporaryDirectory(prefix="ctransfer-apply-") as tmp:
-        manifest = bundle.extract(args.bundle, tmp)
-        _report_pull(apply.apply_export(tmp, manifest, force=args.force, as_fork=args.as_fork, stash=args.stash))
-
-
 def _report_pull(result: dict) -> None:
     if result["backup"]:
         _print(f"previous local state backed up to {result['backup']}")
@@ -249,15 +244,6 @@ def cmd_resume(args) -> None:
     os.execvp("claude", ["claude", "--resume", args.session_id, "--append-system-prompt", RETURN_NOTE])
 
 
-def cmd_configure(args) -> None:
-    cfg = api_mod.load_config()
-    for key in ("api_url",):
-        if getattr(args, key):
-            cfg[key] = getattr(args, key)
-    api_mod.save_config(cfg)
-    print(json.dumps(cfg, indent=2))
-
-
 def cmd_login(args) -> None:
     out = api_mod.login(api_mod.Api.from_config(signed_in=False), notify=_print)
     cfg = api_mod.load_config()
@@ -270,6 +256,7 @@ def cmd_logout(args) -> None:
     cfg = api_mod.load_config()
     cfg.pop("token", None)
     api_mod.save_config(cfg)
+    _print("signed out")
 
 
 def cmd_token(args) -> None:
@@ -285,19 +272,6 @@ def cmd_token(args) -> None:
         token = sys.stdin.read()
     api.call("PUT", "/me/claude-token", {"token": token.strip()})
     _print("Claude token saved; your VMs will run on it")
-
-
-def cmd_discover(args) -> None:
-    info = discover(args)
-    print(json.dumps({"session_id": info.session_id, "cwd": info.cwd, "status": info.status,
-                      "transcript": str(info.transcript), "pid": (info.live or {}).get("pid")}, indent=2))
-
-
-def cmd_bundle(args) -> None:
-    info = discover(args)
-    m = bundle.build(args.out, kind="push", home=sessions.claude_home(), session_id=info.session_id,
-                     project_dir=info.project_dir, cwd=info.cwd, include_config=True, include_agent=True)
-    print(json.dumps(m, indent=2))
 
 
 def prompt_arg(args) -> str | None:
@@ -317,6 +291,7 @@ def cmd_push(args) -> None:
             _print(f"waiting for session {sid} to finish its turn")
             wait_turn_end(sid)
         info = sessions.discover(session_id=sid)
+        _print(f"pushing session {sid} ({info.cwd})")
         if info.status == "busy" and not (args.allow_busy or args.when_idle):
             raise SystemExit(f"session {sid} is mid-turn; wait for it to go idle (or pass --allow-busy/--when-idle)")
         track(state="pushing")
@@ -401,40 +376,75 @@ def cmd_new(args) -> None:
     _print(f"attach:   ctransfer ssh {tid}\nbring back: ctransfer pull {tid}")
 
 
+def _local_time(t: int | None) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "-"
+
+
+def _next_steps(tid: str, state: str) -> str:
+    """What the user can do with a transfer in this state, as commands to copy."""
+    if state == "running":
+        return f"attach: ctransfer ssh {tid}   bring back: ctransfer pull {tid}"
+    if state in ("launching", "bootstrapping", "export_requested", "exported"):
+        return f"bring back: ctransfer pull {tid}"
+    return ""
+
+
 def cmd_ls(args) -> None:
-    for s in api_mod.Api.from_config().call("GET", "/sessions")["sessions"]:
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(s.get("created_at", 0)))
-        print(f"{s['transfer_id']}  {s['state']:<17} {s.get('claude_status', '-'):<8} {when}  {s['cwd']}")
+    transfers = api_mod.Api.from_config().call("GET", "/sessions")["sessions"]
+    if not transfers:
+        print("no cloud sessions. `ctransfer push` moves this one to the cloud; `ctransfer new` starts a fresh one.")
+        return
+    print(f"{'TRANSFER':<12}  {'STATE':<17} {'CLAUDE':<8} {'CREATED':<16}  PROJECT")
+    for s in transfers:
+        print(f"{s['transfer_id']:<12}  {s['state']:<17} {s.get('claude_status', '-'):<8} "
+              f"{_local_time(s.get('created_at')):<16}  {s['cwd']}")
 
 
 def cmd_status(args) -> None:
     if not args.transfer_id:
         return _status_current()
     item = api_mod.Api.from_config().call("GET", f"/sessions/{args.transfer_id}")
-    item.pop("download_url", None)
-    print(json.dumps(item, indent=2))
+    state = item["state"]
+    claude = f" (claude {item['claude_status']})" if state == "running" and item.get("claude_status") else ""
+    lines = [f"transfer {item['transfer_id']}: {state}{claude}",
+             f"  session  {item['session_id']}",
+             f"  project  {item['cwd']}",
+             f"  created  {_local_time(item.get('created_at'))}"]
+    if item.get("failure"):
+        lines.append(f"  failure  {item['failure']}")
+    if item.get("export_reason") and item["export_reason"] != "user":
+        lines.append(f"  exported by the service ({item['export_reason']}); your work is kept until you pull it")
+    steps = _next_steps(item["transfer_id"], state)
+    print("\n".join(lines + ([steps] if steps else [])))
 
 
 def _status_current() -> None:
-    """The detached push of the invoking session: its marker, the cloud state, and the log tail."""
+    """The detached push of the invoking session: its progress, the cloud state, and the log tail."""
     sid = sessions.current_session_id()
     if not sid:
         raise SystemExit("not running inside a Claude Code session; pass a transfer id")
     marker = read_marker(sid)
     if not marker:
         raise SystemExit(f"no ctransfer push recorded for session {sid}")
-    if marker.get("transfer_id"):
+    lines = [f"push of session {sid}: {marker['state']}"]
+    tid = marker.get("transfer_id")
+    if tid:
         try:
-            marker["cloud_state"] = api_mod.Api.from_config().call("GET", f"/sessions/{marker['transfer_id']}")["state"]
-        except (SystemExit, Exception) as e:  # not signed in, network: the marker still helps
-            marker["cloud_state"] = f"unknown ({e})"
-    print(json.dumps(marker, indent=2))
+            cloud = api_mod.Api.from_config().call("GET", f"/sessions/{tid}")["state"]
+        except (SystemExit, Exception) as e:  # not signed in, network: the local progress still helps
+            cloud = f"unknown ({e})"
+        lines.append(f"  transfer  {tid} (in the cloud: {cloud})")
+    if marker.get("error"):
+        lines.append(f"  error     {marker['error']}")
+    if tid and marker["state"] == "running":
+        lines.append(_next_steps(tid, "running"))
     try:
         tail = Path(marker["log"]).read_text().splitlines()[-10:]
     except (KeyError, OSError):
         tail = []
     if tail:
-        print("\n".join(["", "log:", *tail]))
+        lines += ["", f"log ({marker['log']}):", *tail]
+    print("\n".join(lines))
 
 
 def cmd_ssh(args) -> None:
@@ -448,26 +458,51 @@ def cmd_ssh(args) -> None:
     if not key.exists():
         raise SystemExit(f"no key at {key}: ssh only works from the machine that pushed")
     known_hosts = api_mod.CONFIG_PATH.parent / "known_hosts"
-    remote = "tmux attach -t claude || bash -l" if not args.command else args.command
+    tid = args.transfer_id
+    if args.command:
+        remote = args.command
+    else:
+        _print(f"attaching to the claude of {tid}. To leave, press Ctrl-b then d: claude keeps running in the cloud.\n"
+               f"Quitting claude there (/exit) stops it on the VM; bring the session back with: ctransfer pull {tid}")
+        gone = f"claude is no longer running on this VM. Bring the session back with: ctransfer pull {tid}"
+        remote = f"tmux attach -t claude || {{ echo {shlex.quote(gone)}; echo 'This is a shell on the VM; exit leaves.'; exec bash -l; }}"
     cmd = ["ssh", "-i", str(key), "-o", f"UserKnownHostsFile={known_hosts}", "-o", "StrictHostKeyChecking=accept-new",
            "-t", f"ubuntu@{ip}", remote]
     os.execvp("ssh", cmd)
 
 
 def cmd_usage(args) -> None:
+    """This user's standing against their own allowance, and whether a launch would go through right now."""
     u = api_mod.Api.from_config().call("GET", "/me/usage")
     limits = u.get("limits") or {}
 
-    def of(key):
-        return f" of {limits[key]}" if key in limits else ""
-    print(f"{u['month']}: {u['billed_hours'] + u['open_hours']}{of('monthly_vm_hours')} VM-hours "
-          f"({u['open_hours']} on running VMs), {u['launches']} launches, {u['bytes'] / 1e6:.0f}{of('monthly_mb')} MB transferred")
+    def of(key, unit=""):
+        return f" of {limits[key]:g}{unit}" if key in limits else unit
+
+    lines = [f"your free tier this month ({u['month']}):",
+             f"  VM-hours     {u['billed_hours'] + u['open_hours']}{of('monthly_vm_hours')} "
+             f"({u['open_hours']} on VMs still running)",
+             f"  transferred  {u['bytes'] / 1e6:.0f}{of('monthly_mb', ' MB')}"]
+    if "launches_today" in u:  # older control planes report only the month's launches
+        lines.append(f"  launches     {u['launches_today']} today{of('daily_launches', ' a day')}")
+    else:
+        lines.append(f"  launches     {u['launches']} this month")
+    if "running_vms" in u:
+        lines.append(f"  VMs running  {u['running_vms']}{of('vms')}")
+    if "launch_refusal" in u:
+        lines.append(f"you can't launch a VM now: {u['launch_refusal']}" if u["launch_refusal"]
+                     else "you can launch a VM now")
+    print("\n".join(lines))
 
 
 def cmd_rm(args) -> None:
     out = api_mod.Api.from_config().call("DELETE", f"/sessions/{args.transfer_id}")
     clear_markers(args.transfer_id)
-    print(json.dumps(out, indent=2))
+    if out["state"] == "exported":
+        print(f"deleted the VM of {args.transfer_id}; its exported session can still be pulled: "
+              f"ctransfer pull {args.transfer_id}")
+    else:
+        print(f"deleted {args.transfer_id}: its VM and any work done on it are gone")
 
 
 # ---- cron: scheduled runs of a pushed session ---------------------------------------------------
@@ -511,7 +546,8 @@ def cmd_cron_ls(args) -> None:
 
 def cmd_cron_run(args) -> None:
     out = api_mod.Api.from_config().call("POST", f"/schedules/{args.schedule_id}/run")
-    print(json.dumps(out, indent=2))
+    print(f"started run {out['run_id']} of schedule {out['schedule_id']}\n"
+          f"results: ctransfer cron logs {out['schedule_id']}")
 
 
 def _run_line(run: dict) -> str:
@@ -556,7 +592,9 @@ def cmd_cron_pull(args) -> None:
 
 
 def cmd_cron_rm(args) -> None:
-    print(json.dumps(api_mod.Api.from_config().call("DELETE", f"/schedules/{args.schedule_id}"), indent=2))
+    out = api_mod.Api.from_config().call("DELETE", f"/schedules/{args.schedule_id}")
+    stopped = f"; stopped its running run(s): {', '.join(out['runs_stopped'])}" if out["runs_stopped"] else ""
+    print(f"deleted schedule {out['deleted']}{stopped}")
 
 
 def add_cron_parser(sub, session_args) -> None:
@@ -592,14 +630,10 @@ def add_cron_parser(sub, session_args) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ctransfer", description="Move a Claude Code session to a cloud VM and back.")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    p = sub.add_parser("configure", help="point at another control plane (default: the hosted one)")
-    p.add_argument("--api-url")
-    p.set_defaults(fn=cmd_configure)
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
+    # Listed in the order a user meets them: set up, send work out, check on it, bring it back.
 
     sub.add_parser("login", help="sign in with GitHub").set_defaults(fn=cmd_login)
-    sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
 
     p = sub.add_parser("token", help="store (set, read from stdin) or delete (rm) the Claude token your VMs run on")
     p.add_argument("action", choices=("set", "rm"))
@@ -610,21 +644,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--cwd", help="project directory (default: current directory)")
         p.add_argument("--current", action="store_true", help="the Claude Code session running this command")
 
-    p = sub.add_parser("discover", help="show which local session would be pushed")
-    session_args(p)
-    p.set_defaults(fn=cmd_discover)
-
-    p = sub.add_parser("bundle", help="write a push bundle to a file (manual spike / debugging)")
-    session_args(p)
-    p.add_argument("--out", required=True)
-    p.set_defaults(fn=cmd_bundle)
-
-    p = sub.add_parser("push", help="send a session to a new cloud VM")
+    p = sub.add_parser("push", help="move a session to a new cloud VM")
     session_args(p)
     p.add_argument("--remote-control", action="store_true", help="start claude with --remote-control on the VM")
     p.add_argument("--no-file-history", action="store_true", help="skip /rewind checkpoints")
     p.add_argument("--allow-busy", action="store_true", help="push even if the session is mid-turn")
-    p.add_argument("--no-wait", action="store_true")
+    p.add_argument("--no-wait", action="store_true", help="return once the VM is launching")
     p.add_argument("--when-idle", action="store_true", help="wait for the session's current turn to end, then push")
     p.add_argument("--detach", action="store_true", help="push from a background worker; log under ~/.config/ctransfer/logs")
     p.add_argument("--track", action="store_true", help=argparse.SUPPRESS)  # set on the detached worker
@@ -636,47 +661,41 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cwd", help="project directory to copy (default: current directory)")
     p.add_argument("--session-id", help="UUID for the new session (default: random)")
     p.add_argument("--remote-control", action="store_true", help="start claude with --remote-control on the VM")
-    p.add_argument("--no-wait", action="store_true")
+    p.add_argument("--no-wait", action="store_true", help="return once the VM is launching")
     p.add_argument("--detach", action="store_true", help="start from a background worker; log under ~/.config/ctransfer/logs")
     p.set_defaults(fn=cmd_new)
 
-    def overwrite_args(p):
-        p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged")
-        p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
-        p.add_argument("--stash", action="store_true", help="stash local uncommitted changes instead of refusing")
+    sub.add_parser("ls", help="list your cloud sessions").set_defaults(fn=cmd_ls)
+
+    p = sub.add_parser("status", help="one cloud session in detail (no id: this Claude Code session's push)")
+    p.add_argument("transfer_id", nargs="?")
+    p.add_argument("--current", action="store_true", help="the Claude Code session running this command (default)")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("ssh", help="attach to a cloud session's claude (Ctrl-b then d detaches; it keeps running)")
+    p.add_argument("transfer_id")
+    p.add_argument("command", nargs="?", help="run this on the VM instead of attaching")
+    p.set_defaults(fn=cmd_ssh)
 
     p = sub.add_parser("pull", help="bring a cloud session back, overwriting the local copy")
     p.add_argument("transfer_id")
-    overwrite_args(p)
+    p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged")
+    p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
+    p.add_argument("--stash", action="store_true", help="stash local uncommitted changes instead of refusing")
     p.set_defaults(fn=cmd_pull)
-
-    p = sub.add_parser("apply", help="apply an export bundle file locally (manual spike)")
-    p.add_argument("bundle")
-    overwrite_args(p)
-    p.set_defaults(fn=cmd_apply)
-
-    sub.add_parser("usage", help="this month's VM-hours and transfer volume").set_defaults(fn=cmd_usage)
 
     p = sub.add_parser("resume", help="continue a pulled session locally (claude --resume, told it is back)")
     p.add_argument("session_id")
     p.set_defaults(fn=cmd_resume)
 
-    p = sub.add_parser("ls", help="list transfers")
-    p.set_defaults(fn=cmd_ls)
-
-    for name, fn, help_ in (("status", cmd_status, "show one transfer"), ("ssh", cmd_ssh, "attach to the VM's claude tmux session"),
-                            ("rm", cmd_rm, "delete a transfer's VM")):
-        p = sub.add_parser(name, help=help_)
-        if name == "status":  # no id: the push of the invoking Claude Code session
-            p.add_argument("transfer_id", nargs="?")
-            p.add_argument("--current", action="store_true", help="the Claude Code session running this command (default)")
-        else:
-            p.add_argument("transfer_id")
-        if name == "ssh":
-            p.add_argument("command", nargs="?", help="run this instead of attaching to tmux")
-        p.set_defaults(fn=fn)
+    p = sub.add_parser("rm", help="delete a cloud session and its VM without bringing it back")
+    p.add_argument("transfer_id")
+    p.set_defaults(fn=cmd_rm)
 
     add_cron_parser(sub, session_args)
+
+    sub.add_parser("usage", help="your free-tier usage this month, and whether you can launch now").set_defaults(fn=cmd_usage)
+    sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
     return ap
 
 

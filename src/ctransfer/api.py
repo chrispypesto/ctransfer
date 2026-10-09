@@ -10,7 +10,7 @@ from pathlib import Path
 from . import net
 
 CONFIG_PATH = Path(os.environ.get("CTRANSFER_CONFIG") or Path.home() / ".config" / "ctransfer" / "config.json")
-# The hosted control plane. `ctransfer configure --api-url` or CTRANSFER_API_URL points at another deployment.
+# The hosted control plane. CTRANSFER_API_URL (or api_url in the config file) points at another deployment.
 DEFAULT_API_URL = "https://api.ctransfer.itschrispy.com"
 
 

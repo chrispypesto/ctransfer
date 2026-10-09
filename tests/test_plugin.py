@@ -38,19 +38,16 @@ def test_dispatcher_status_reports_this_sessions_push(cli_env):
     assert out.returncode == 1 and "no ctransfer push recorded for session s1" in out.stdout
     cli.write_marker("s1", state="launching", transfer_id="t9")
     out = run(["bash", str(DISPATCH), "status"], cli_env)
-    report = json.loads(out.stdout)
-    assert report["transfer_id"] == "t9" and report["cloud_state"].startswith("unknown (not signed in")
+    assert out.stdout.startswith("push of session s1: launching")
+    assert "t9 (in the cloud: unknown (not signed in" in out.stdout
 
 
-def test_dispatcher_passes_other_commands_to_cli(cli_env, laptop):
+def test_dispatcher_passes_other_commands_to_cli(cli_env):
     for args in (["status", "abc"], ["ls"], ["pull", "abc", "--force"], ["rm", "abc"]):
         out = run(["bash", str(DISPATCH), *args], cli_env)
         assert out.returncode == 1 and "not signed in" in out.stdout, (args, out.stdout)
     out = run(["bash", str(DISPATCH), "pull"], cli_env)
     assert out.returncode == 2 and "transfer_id" in out.stdout
-    out = run(["bash", str(DISPATCH), "discover"], {**cli_env, "CLAUDE_CONFIG_DIR": str(laptop["home"]),
-                                                    "CLAUDE_CODE_SESSION_ID": laptop["sid"]})
-    assert json.loads(out.stdout)["session_id"] == laptop["sid"]
 
 
 def test_dispatcher_rejects_unknown_and_interactive_commands(cli_env):

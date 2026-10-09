@@ -34,6 +34,8 @@ from . import bundle, net, sessions, workspace
 STATE_PATH = Path("/var/lib/ctransfer/state.json")
 AGENT_DIR = Path("/opt/ctransfer/agent")
 TMUX_SESSION = "claude"
+# In tmux's status bar for whoever attaches with `ctransfer ssh`, most of whom have never used tmux.
+DETACH_HINT = " Ctrl-b then d: detach, claude keeps running "
 HEARTBEAT_SEC = 60
 EXPORT_WAIT_SEC = 1800
 RESULT_TEXT_MAX = 8000  # chars of the run's final message reported to the control plane
@@ -180,16 +182,20 @@ def _write_launcher(state: dict, home: Path, claude_token: str, body: str) -> Pa
     return launcher
 
 
-def _start_in_tmux(state: dict, home: Path, launcher: Path) -> None:
+def _start_in_tmux(state: dict, home: Path, launcher: Path, *, status_hint: str | None = None) -> None:
     if state["user"]:
         subprocess.run(["chown", "-R", f"{state['user']}:{state['user']}", str(home / ".ctransfer")], check=True)
-    subprocess.run(_as_user(state["user"], f"tmux new-session -d -s {TMUX_SESSION} -x 220 -y 50 {launcher}"), check=True)
+    cmd = f"tmux new-session -d -s {TMUX_SESSION} -x 220 -y 50 {launcher}"
+    if status_hint:
+        cmd += (f" \\; set-option -t {TMUX_SESSION} status-right {shlex.quote(status_hint)}"
+                f" \\; set-option -t {TMUX_SESSION} status-right-length {len(status_hint)}")
+    subprocess.run(_as_user(state["user"], cmd), check=True)
 
 
 def _launch(state: dict, home: Path, claude_token: str, remote_control: bool, prompt: str | None = None) -> None:
     args = claude_args(state, remote_control=remote_control, prompt=prompt)
     launcher = _write_launcher(state, home, claude_token, f"exec \"$HOME/.local/bin/claude\" {shlex.join(args)}")
-    _start_in_tmux(state, home, launcher)
+    _start_in_tmux(state, home, launcher, status_hint=DETACH_HINT)
 
 
 def run_dir(home: Path) -> Path:
