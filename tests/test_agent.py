@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ctransfer import agent, bundle, sessions
-from tests.conftest import run_git
+from tests.conftest import add_replies, run_git
 
 BOOT = {"transfer_id": "t1", "agent_url": "https://agent.example/", "agent_token": "tok", "claude_token": "sk-ant-oat-x"}
 
@@ -47,6 +47,7 @@ def test_manual_restore_launches_claude_told_the_transfer_is_complete(laptop, tm
     (network) and tmux; the generated launcher then runs for real against a stand-in claude binary.
     `ctransfer push <prompt>`: the resumed claude runs the prompt at once instead of waiting idle."""
     info = sessions.discover(session_id=laptop["sid"])
+    last_ran_with = add_replies(laptop["transcript"], info.session_id, info.cwd)
     b = tmp_path / "push.tgz"
     bundle.build(b, kind="push", home=laptop["home"], session_id=info.session_id, project_dir=info.project_dir,
                  cwd=info.cwd, include_config=True, include_agent=True, extra={"prompt": prompt} if prompt else None)
@@ -81,7 +82,7 @@ def test_manual_restore_launches_claude_told_the_transfer_is_complete(laptop, tm
     out = real_run(["bash", str(vm_home / ".ctransfer" / "launch.sh")], env={"HOME": str(vm_home), "PATH": "/usr/bin:/bin"},
                    capture_output=True, text=True, check=True).stdout
     argv = json.loads(out)
-    assert argv[:2] == ["--resume", info.session_id]
+    assert argv[:6] == ["--resume", info.session_id, *last_ran_with]  # same model and effort as on the laptop
     note_at = argv.index("--append-system-prompt") + 1
     assert "transfer t1" in argv[note_at] and "complete" in argv[note_at] and "ctransfer pull t1" in argv[note_at]
     assert argv[note_at + 1:] == ([prompt] if prompt else [])
@@ -135,6 +136,7 @@ def test_scheduled_run_forks_the_session_headlessly_and_reports_its_result(lapto
     run_git(tmp_path, "clone", "-q", "--bare", str(laptop["repo"]), str(upstream))
     run_git(laptop["repo"], "remote", "set-url", "origin", str(upstream))
     info = sessions.discover(session_id=laptop["sid"])
+    last_ran_with = add_replies(laptop["transcript"], info.session_id, info.cwd)
     b = tmp_path / "push.tgz"
     bundle.build(b, kind="push", home=laptop["home"], session_id=info.session_id, project_dir=info.project_dir,
                  cwd=info.cwd, include_config=True, include_agent=True)
@@ -192,6 +194,6 @@ def test_scheduled_run_forks_the_session_headlessly_and_reports_its_result(lapto
     assert result == {"exit_code": 0, "session_id": fork, "is_error": False, "num_turns": 4, "total_cost_usd": 0.12,
                       "text": "build fixed", "permission_denials": 1}
     argv = json.loads((vm_home / ".ctransfer" / "run" / "result.json").read_text())["argv"]
-    assert argv[:4] == ["-p", run["prompt"], "--resume", info.session_id]
-    assert "--fork-session" in argv and argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert argv[:5] == ["-p", run["prompt"], "--resume", info.session_id, "--fork-session"]
+    assert argv[5:9] == last_ran_with and argv[argv.index("--permission-mode") + 1] == "acceptEdits"
     assert argv[argv.index("--append-system-prompt") + 1] == "unattended run 3"

@@ -157,12 +157,18 @@ def new_session_note(transfer_id: str) -> str:
             f"session back by running `ctransfer pull {transfer_id}` on their laptop.")
 
 
+def transcript_path(state: dict) -> Path:
+    return Path(state["claude_home"]) / "projects" / state["project_dir"] / f"{state['session_id']}.jsonl"
+
+
 def claude_args(state: dict, *, remote_control: bool = False, prompt: str | None = None) -> list[str]:
-    """How the VM starts claude: resume the pushed session, or start the new one under its pre-chosen id."""
+    """How the VM starts claude: resume the pushed session on the model and effort it last ran with, or start the new
+    one under its pre-chosen id."""
     if state["new"]:
         args = ["--session-id", state["session_id"], "--append-system-prompt", new_session_note(state["transfer_id"])]
     else:
-        args = ["--resume", state["session_id"], "--append-system-prompt", arrival_note(state["transfer_id"])]
+        args = ["--resume", state["session_id"], *sessions.model_args(transcript_path(state)),
+                "--append-system-prompt", arrival_note(state["transfer_id"])]
     if remote_control:
         args.append("--remote-control")
     return args + [prompt] if prompt else args
@@ -211,6 +217,7 @@ def _launch_run(state: dict, home: Path, claude_token: str, run: dict) -> None:
     claude = " ".join([
         f"timeout --kill-after=30 {int(run['timeout_sec'])}", "\"$HOME/.local/bin/claude\"",
         "-p", shlex.quote(run["prompt"]), "--resume", state["session_id"], "--fork-session",
+        shlex.join(sessions.model_args(transcript_path(state))),
         "--output-format", "json", "--permission-mode", shlex.quote(run.get("permission_mode") or "default"),
         "--append-system-prompt", shlex.quote(run["note"])])
     launcher = _write_launcher(state, home, claude_token,

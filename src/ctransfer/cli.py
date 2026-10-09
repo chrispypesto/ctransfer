@@ -138,6 +138,10 @@ def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = 
                             cwd=info.cwd, include_config=True, include_agent=True, include_file_history=file_history,
                             extra={"prompt": prompt} if prompt else None)
 
+    resume_as = sessions.model_args(info.transcript)  # ["--model", model] plus ["--effort", level] if recorded
+    if resume_as:
+        effort = f" at {resume_as[3]} effort" if len(resume_as) == 4 else ""
+        _print(f"the session continues on {resume_as[1]}{effort}, as it last ran")
     return _send(api, info.session_id, info.cwd, build, remote_control=remote_control, wait=wait, keys=keys,
                  sleep=sleep, on_launch=on_launch)
 
@@ -238,10 +242,13 @@ RETURN_NOTE = (
 
 
 def cmd_resume(args) -> None:
-    """claude --resume, told the session is back from the cloud (the counterpart of the VM's arrival note)."""
-    if not sessions.find_transcript(args.session_id):
+    """claude --resume on the model and effort the session last ran with, told it is back from the cloud (the
+    counterpart of the VM's arrival note)."""
+    transcript = sessions.find_transcript(args.session_id)
+    if not transcript:
         raise SystemExit(f"no local transcript for session {args.session_id}; pull it first")
-    os.execvp("claude", ["claude", "--resume", args.session_id, "--append-system-prompt", RETURN_NOTE])
+    os.execvp("claude", ["claude", "--resume", args.session_id, *sessions.model_args(transcript),
+                         "--append-system-prompt", RETURN_NOTE])
 
 
 def cmd_login(args) -> None:

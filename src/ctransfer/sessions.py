@@ -113,6 +113,31 @@ def transcript_version(path: Path) -> str | None:
     return versions[-1] if versions else None
 
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+# A model id or alias as claude --model takes it, e.g. claude-opus-5-5 or opus[1m]; never a flag.
+MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]*")
+
+
+def model_args(path: Path) -> list[str]:
+    """`--model`/`--effort` flags that resume a session on the model and effort level of its last reply.
+
+    Every assistant record notes the model asked for (requestedModel) and the session's effort level, so a session
+    picks up whatever /model and /effort last set, not the defaults of the machine it lands on."""
+    if not path.is_file():
+        return []
+    for rec in reversed(read_records(path)):
+        if rec.get("type") != "assistant" or rec.get("isSidechain"):
+            continue
+        model = rec.get("requestedModel") or (rec.get("message") or {}).get("model")
+        if not isinstance(model, str) or not MODEL_NAME.fullmatch(model):
+            continue  # e.g. "<synthetic>" on records Claude Code writes for API errors
+        args = ["--model", model]
+        if rec.get("effort") in EFFORT_LEVELS:
+            args += ["--effort", rec["effort"]]
+        return args
+    return []
+
+
 @dataclass
 class SessionInfo:
     session_id: str

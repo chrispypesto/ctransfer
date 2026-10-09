@@ -45,6 +45,19 @@ def record(session_id, cwd, **kw):
     return {"type": "user", "uuid": str(uuid.uuid4()), "sessionId": session_id, "cwd": cwd, "version": "2.1.287", **kw}
 
 
+def add_replies(transcript: Path, session_id: str, cwd: str) -> list[str]:
+    """Assistant turns as Claude Code records them: one on opus, then on sonnet at low effort after /model and
+    /effort, then an API error record. Returns the flags that resume the session as it last ran."""
+    def reply(model, **kw):
+        return record(session_id, cwd, type="assistant", requestedModel=model,
+                      message={"model": model, "content": [{"type": "text", "text": "ok"}]}, **kw)
+    with open(transcript, "a") as f:
+        for rec in (reply("claude-opus-5-5", effort="high"), reply("claude-sonnet-5-5", effort="low"),
+                    record(session_id, cwd, type="assistant", message={"model": "<synthetic>", "content": []})):
+            f.write(json.dumps(rec) + "\n")
+    return ["--model", "claude-sonnet-5-5", "--effort", "low"]
+
+
 def write_transcript(home: Path, session_id: str, cwd: str, n: int = 3) -> Path:
     proj = home / "projects" / encode_project_dir(cwd)
     proj.mkdir(parents=True, exist_ok=True)
