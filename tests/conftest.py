@@ -12,8 +12,10 @@ from ctransfer.sessions import encode_project_dir
 
 @pytest.fixture(autouse=True)
 def hermetic(tmp_path, monkeypatch):
-    """Keep ctransfer state out of the real ~/.config, and ignore the Claude session running the tests."""
+    """Keep ctransfer state out of the real ~/.config (in subprocesses too, e.g. detached workers), and ignore
+    the Claude session running the tests."""
     monkeypatch.setattr(api_mod, "CONFIG_PATH", tmp_path / "config" / "config.json")
+    monkeypatch.setenv("CTRANSFER_CONFIG", str(api_mod.CONFIG_PATH))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
 
 

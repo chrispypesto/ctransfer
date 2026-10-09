@@ -47,7 +47,8 @@ def main():
         marker_path.write_text(json.dumps(marker, indent=2))
         reason = (f"ctransfer: the push of this session failed: {marker.get('error', 'unknown error')}\n"
                   f"Log: {log}\nThe session stays local; resend your prompt to continue here, or /ctransfer to retry.")
-    elif state == "queued" and re.match(r"/ctransfer(:ctransfer)?(\s+push)?(\s+-|\s*$)", event.get("prompt", "")):
+    elif state == "queued" and re.match(r"/ctransfer(:ctransfer)?(\s+push(\s.*)?|\s+-.*)?\s*$", event.get("prompt", ""),
+                                        re.S):
         # The skill's shell block runs before this hook, so this is the /ctransfer that just queued the push.
         # Blocking it keeps the transcript ending at the previous turn, which is what gets pushed.
         reason = ("ctransfer: push queued. This session moves to the cloud as soon as it is idle (a few seconds).\n"

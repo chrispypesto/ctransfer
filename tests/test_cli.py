@@ -4,7 +4,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -73,6 +75,20 @@ def test_detached_push_refuses_while_one_is_active(laptop):
         cli.main(["push", "--session", laptop["sid"], "--when-idle", "--detach"])
     assert cli.read_marker(laptop["sid"])["state"] == "pushing"
     assert not (api_mod.CONFIG_PATH.parent / "logs").exists()
+
+
+def test_detached_push_hands_the_prompt_to_its_worker(laptop):
+    """The worker runs after the caller's shell is gone, so the prompt must reach it on its command line.
+    The control plane is unreachable, so the worker fails after the bundle is built."""
+    configure()
+    cli.main(["push", "--session", laptop["sid"], "--detach", "keep", "going:", "don't", "stop"])
+    log = Path(cli.read_marker(laptop["sid"])["log"])
+    deadline = time.time() + 30
+    while cli.read_marker(laptop["sid"])["state"] in cli.ACTIVE_STATES and time.time() < deadline:
+        time.sleep(0.2)
+    header = log.read_text().splitlines()[1]
+    assert f"push --session {laptop['sid']} --track" in header and header.endswith("-- keep going: don't stop")
+    assert cli.read_marker(laptop["sid"])["state"] == "failed"
 
 
 def test_resume_tells_claude_the_session_is_back(laptop, tmp_path):

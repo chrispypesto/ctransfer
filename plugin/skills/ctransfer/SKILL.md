@@ -1,7 +1,7 @@
 ---
 name: ctransfer
 description: Move this session to a cloud VM with ctransfer, start a new cloud session, or show status, list, pull transfers
-argument-hint: "[push [--remote-control] | new [prompt] | status [id] | ls | pull <id> | rm <id>]"
+argument-hint: "[push [--remote-control] [prompt] | new [prompt] | status [id] | ls | pull <id> | rm <id>]"
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ctransfer.sh:*)
 disable-model-invocation: true
 ---

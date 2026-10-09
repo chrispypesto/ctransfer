@@ -15,7 +15,11 @@ MSG
   exit 1
 fi
 
-push() { exec "$bin" push --current --when-idle --detach "$@"; }
+push() {  # leading --flags are options, the rest is the prompt the cloud session runs on arrival
+  flags=()
+  while [ $# -gt 0 ] && [ "${1#--}" != "$1" ]; do flags+=("$1"); shift; done
+  exec "$bin" push --current --when-idle --detach ${flags[@]+"${flags[@]}"} -- "$@"
+}
 
 # The skill passes its arguments on stdin through a quoted heredoc, so no shell quoting or expansion touches
 # them (an unquoted $ARGUMENTS breaks on "don't"). Split them into words as typed, without globbing.
@@ -40,6 +44,6 @@ case "$sub" in
     exec "$bin" new --detach ${flags[@]+"${flags[@]}"} -- "$@" ;;
   ssh | resume) echo "$sub needs an interactive terminal. In another terminal run:  ctransfer $sub $*"; exit 1 ;;
   *)
-    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] | new [--remote-control] [prompt] | status [id] | discover | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
+    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] [prompt] | new [--remote-control] [prompt] | status [id] | discover | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
     exit 2 ;;
 esac
