@@ -86,12 +86,19 @@ def test_guard_blocks_prompts_while_pushed(state):
     assert ("ctransfer pull t9" in verdict["reason"]) == (state == "running")
 
 
-@pytest.mark.parametrize("prompt", ["/ctransfer", "/ctransfer push --remote-control", "/ctransfer:ctransfer"])
+@pytest.mark.parametrize("prompt", ["/ctransfer", "/ctransfer push --remote-control", "/ctransfer:ctransfer",
+                                    "/ctransfer push keep going\nthen run the tests", "/ctransfer --remote-control go on"])
 def test_guard_confirms_the_invocation_that_queued_the_push(prompt):
     # The skill's shell block runs before the hook, so the marker already exists for this very prompt.
     cli.write_marker("s1", state="queued")
     verdict = guard("s1", prompt)
     assert verdict["decision"] == "block" and verdict["reason"].startswith("ctransfer: push queued.")
+
+
+def test_guard_does_not_mistake_other_subcommands_for_the_push():
+    cli.write_marker("s1", state="queued")
+    verdict = guard("s1", "/ctransfer status")
+    assert verdict["decision"] == "block" and not verdict["reason"].startswith("ctransfer: push queued.")
 
 
 def test_guard_reports_a_failed_push_once():
@@ -159,6 +166,24 @@ def test_dispatcher_starts_a_new_cloud_session_with_the_prompt_verbatim(cli_env,
     assert f"--cwd {ROOT}" in header and "--remote-control" in header
     assert header.endswith("-- don't \"break\" $HOME `x`")
     assert cli.read_marker("s1") is None  # the invoking session is not being pushed: the guard leaves it alone
+
+
+def test_dispatcher_pushes_with_the_prompt_verbatim(cli_env, laptop):
+    """/ctransfer push <prompt>: leading --flags stay options, the rest reaches the background worker intact
+    as the prompt the cloud session runs on arrival. The control plane is unreachable, so the worker fails."""
+    configure_signed_in()
+    env = {**cli_env, "CLAUDE_CONFIG_DIR": str(laptop["home"]), "CLAUDE_CODE_SESSION_ID": laptop["sid"],
+           "CLAUDE_PLUGIN_ROOT": str(PLUGIN)}
+    out = run(["bash", "-c", skill_command("push --remote-control don't \"break\" $HOME `x`")], env)
+    assert out.returncode == 0 and "queued push" in out.stdout, out.stdout
+    deadline = time.time() + 30
+    while cli.read_marker(laptop["sid"])["state"] in cli.ACTIVE_STATES and time.time() < deadline:
+        time.sleep(0.2)
+    marker = cli.read_marker(laptop["sid"])
+    assert marker["state"] == "failed"
+    header = Path(marker["log"]).read_text().splitlines()[1]
+    assert "--remote-control" in header and "--when-idle" in header
+    assert header.endswith("-- don't \"break\" $HOME `x`")
 
 
 def test_skill_passes_other_commands_through(cli_env):
