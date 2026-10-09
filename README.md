@@ -29,7 +29,8 @@ The plugin needs the CLI installed. It runs `$CTRANSFER_BIN` if set, otherwise `
 
 | Command | Does |
 |---|---|
-| `/ctransfer [--remote-control] [--no-file-history]` | push **this** session once it is idle |
+| `/ctransfer [push] [--remote-control] [--no-file-history]` | push **this** session once it is idle |
+| `/ctransfer push [--flags] <prompt>` | same, and the cloud session runs `<prompt>` as soon as it arrives |
 | `/ctransfer new [--remote-control] [prompt]` | start a **new** session on a cloud VM in a copy of this project; this session carries on |
 | `/ctransfer status [id]` | this session's push (state, cloud state, log tail), or one transfer |
 | `/ctransfer ls`, `pull <id>`, `rm <id>` | same as the CLI |
@@ -49,6 +50,7 @@ What `/ctransfer` does:
 ```bash
 ctransfer discover                 # which session would be pushed (newest one for this directory)
 ctransfer push [--remote-control]  # bundle, upload, launch, wait until the VM is running
+ctransfer push "keep going, then run the tests"   # same, and the VM's claude starts on this right away
 #   then /exit the local session: continuing locally makes the two copies diverge
 ctransfer new ["first prompt"]     # start a fresh session on a VM in a copy of this directory
 ctransfer ssh <transfer-id>        # attach to the VM's `claude` tmux session (Ctrl-b d to detach)
@@ -56,6 +58,8 @@ ctransfer ls | status <id>
 ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
 ctransfer resume <session-id>      # carry on locally (claude --resume, told the session is back)
 ```
+
+With a prompt, `push` starts the VM's `claude --resume` with it, so the session gets to work without anyone attaching. Without one it waits idle in tmux for `ctransfer ssh`.
 
 `push --current` targets the Claude Code session running the command. `push --when-idle --detach` waits for that session's turn to end in a background worker, which is what `/ctransfer` uses.
 
