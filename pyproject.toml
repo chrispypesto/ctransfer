@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "ctransfer"
 version = "0.1.0"
 description = "Move a live Claude Code session to a cloud VM and back"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []  # standard library only: the CLI signs in with GitHub and calls the API with a bearer token
 
 [project.optional-dependencies]
