@@ -15,7 +15,7 @@ MSG
   exit 1
 fi
 
-push() {  # leading --flags are options, the rest is the prompt the cloud session runs on arrival
+push() {  # leading --flags are options (--size=large: one word), the rest is the prompt the cloud session runs on arrival
   flags=()
   while [ $# -gt 0 ] && [ "${1#--}" != "$1" ]; do flags+=("$1"); shift; done
   exec "$bin" push --current --when-idle --detach ${flags[@]+"${flags[@]}"} -- "$@"
@@ -36,13 +36,13 @@ case "$sub" in
   push) push "$@" ;;
   -*) push "$sub" "$@" ;;  # /ctransfer --remote-control
   status) if [ $# -gt 0 ]; then exec "$bin" status "$@"; else exec "$bin" status --current; fi ;;
-  pull | ls | rm) exec "$bin" "$sub" "$@" ;;
+  pull | ls | rm | usage) exec "$bin" "$sub" "$@" ;;
   new)  # leading --flags are options, the rest is the new session's first prompt
     flags=()
     while [ $# -gt 0 ] && [ "${1#--}" != "$1" ]; do flags+=("$1"); shift; done
     exec "$bin" new --detach ${flags[@]+"${flags[@]}"} -- "$@" ;;
   ssh | resume) echo "$sub needs an interactive terminal. In another terminal run:  ctransfer $sub $*"; exit 1 ;;
   *)
-    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] [prompt] | new [--remote-control] [prompt] | status [id] | ls | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
+    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] [--size=small|large] [prompt] | new [--remote-control] [--size=small|large] [prompt] | status [id] | ls | usage | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
     exit 2 ;;
 esac
