@@ -12,6 +12,8 @@ from . import net
 CONFIG_PATH = Path(os.environ.get("CTRANSFER_CONFIG") or Path.home() / ".config" / "ctransfer" / "config.json")
 # The hosted control plane. CTRANSFER_API_URL (or api_url in the config file) points at another deployment.
 DEFAULT_API_URL = "https://api.ctransfer.itschrispy.com"
+TERMS_URL = "https://ctransfer.itschrispy.com/terms"
+PRIVACY_URL = "https://ctransfer.itschrispy.com/privacy"
 
 
 def load_config() -> dict:

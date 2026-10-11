@@ -259,6 +259,8 @@ def cmd_resume(args) -> None:
 
 
 def cmd_login(args) -> None:
+    _print(f"By signing in you agree to the Terms of Use ({api_mod.TERMS_URL}) and the Privacy Policy "
+           f"({api_mod.PRIVACY_URL}).")
     out = api_mod.login(api_mod.Api.from_config(signed_in=False), notify=_print)
     cfg = api_mod.load_config()
     cfg["token"] = out["token"]
@@ -271,6 +273,26 @@ def cmd_logout(args) -> None:
     cfg.pop("token", None)
     api_mod.save_config(cfg)
     _print("signed out")
+
+
+def cmd_account_delete(args) -> None:
+    api = api_mod.Api.from_config()
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit("account deletion needs confirmation: run it in a terminal, or add --yes")
+        _print("This permanently deletes your ctransfer account: every cloud session and its VM (running ones are "
+               "stopped without being brought back), your schedules, your Claude token and secrets. Sessions on "
+               "this machine are not touched.")
+        if input("Type 'delete' to confirm: ").strip() != "delete":
+            raise SystemExit("not deleted")
+    out = api.call("DELETE", "/me")
+    for local in (keys_dir(), marker_dir()):  # ssh keys and push progress of sessions that no longer exist
+        shutil.rmtree(local, ignore_errors=True)
+    cfg = api_mod.load_config()
+    cfg.pop("token", None)
+    api_mod.save_config(cfg)
+    _print(f"Your ctransfer account is deleted: {out['vms_stopped']} VM(s) stopped, {out['sessions']} cloud "
+           f"session(s) and {out['schedules']} schedule(s) removed. You are signed out.")
 
 
 def cmd_token(args) -> None:
@@ -755,6 +777,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("usage", help="your free-tier usage this month, and whether you can launch now").set_defaults(fn=cmd_usage)
     sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
+
+    account = sub.add_parser("account", help="delete your ctransfer account and everything stored for it")
+    asub = account.add_subparsers(dest="account_cmd", required=True)
+    p = asub.add_parser("delete", help="delete your account, cloud sessions, VMs, schedules, Claude token and secrets")
+    p.add_argument("--yes", action="store_true", help="don't ask for confirmation")
+    p.set_defaults(fn=cmd_account_delete)
     return ap
 
 
