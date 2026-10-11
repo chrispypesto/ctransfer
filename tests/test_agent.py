@@ -212,6 +212,7 @@ def test_secrets_reach_claude_and_a_github_token_lets_git_and_gh_use_github(lapt
     vm_home = tmp_path / "vm" / "home"
     vm_home.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(vm_home))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")  # a stock VM: no gh yet
     secrets = {"GITHUB_TOKEN": "github_pat_test", "ODD": "it's \"$quoted\" `and` spaced\nover lines"}
     boot = tmp_path / "boot.json"
     boot.write_text(json.dumps({**BOOT, "agent_url": "", "secrets": secrets}))
@@ -279,3 +280,14 @@ def test_mcp_servers_follow_the_session_except_those_holding_literal_credentials
     assert project["mcpServers"] == {"notion": notion} and project["enabledMcpjsonServers"] == ["db"]
     assert project["hasTrustDialogAccepted"]
     assert "oauthAccount" not in cfg and not any(p.endswith("/somewhere/else") for p in cfg["projects"])
+
+
+def test_a_claude_cli_already_on_the_vm_is_recognized(tmp_path):
+    """A VM booted from an image with the CLI baked in skips installing the same version again."""
+    home = tmp_path / "home"
+    assert agent.installed_claude_version(home, None) is None
+    binary = home / ".local" / "bin" / "claude"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\necho '2.1.296 (Claude Code)'\n")
+    binary.chmod(0o755)
+    assert agent.installed_claude_version(home, None) == "2.1.296"
