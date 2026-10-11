@@ -1,5 +1,6 @@
 """CLI behavior that needs no control plane. Pushes that reach one are tested with the control plane."""
 
+import io
 import json
 import os
 import subprocess
@@ -125,3 +126,18 @@ def test_detached_new_needs_sign_in(laptop):
     with pytest.raises(SystemExit, match="not signed in"):
         cli.main(["new", "--cwd", str(laptop["repo"]), "--detach", "hello"])
     assert not (api_mod.CONFIG_PATH.parent / "logs").exists()  # no worker was started
+
+
+def test_account_delete_asks_first_and_changes_nothing_unless_confirmed(monkeypatch):
+    configure_signed_in()  # api.invalid: reaching the control plane would fail the test
+    with pytest.raises(SystemExit, match="--yes"):
+        cli.main(["account", "delete"])  # stdin is not a terminal under pytest
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr("sys.stdin", Terminal("yes\n"))
+    with pytest.raises(SystemExit, match="not deleted"):
+        cli.main(["account", "delete"])
+    assert api_mod.load_config()["token"] == "test-token"

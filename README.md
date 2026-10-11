@@ -56,6 +56,7 @@ ctransfer ssh <transfer-id>        # attach to the VM's claude; Ctrl-b then d de
 ctransfer ls | status <id> | usage
 ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
 ctransfer resume <session-id>      # carry on locally (claude --resume, told the session is back)
+ctransfer account delete           # delete your account: VMs, sessions, schedules, Claude token, secrets
 ```
 
 With a prompt, `push` starts the VM's `claude --resume` with it, so the session gets to work without anyone attaching. Without one it waits idle in tmux for `ctransfer ssh`.
