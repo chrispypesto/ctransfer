@@ -212,7 +212,6 @@ def test_secrets_reach_claude_and_a_github_token_lets_git_and_gh_use_github(lapt
     vm_home = tmp_path / "vm" / "home"
     vm_home.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(vm_home))
-    monkeypatch.setenv("PATH", "/usr/bin:/bin")  # a stock VM: no gh yet
     secrets = {"GITHUB_TOKEN": "github_pat_test", "ODD": "it's \"$quoted\" `and` spaced\nover lines"}
     boot = tmp_path / "boot.json"
     boot.write_text(json.dumps({**BOOT, "agent_url": "", "secrets": secrets}))

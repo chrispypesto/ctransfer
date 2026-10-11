@@ -191,10 +191,9 @@ def _setup_github(home: Path, user: str | None, secrets: dict[str, str]) -> bool
 
 def _install_gh() -> None:
     """The GitHub CLI, for opening and answering pull requests. Best effort: a session without it still runs."""
-    if shutil.which("gh"):  # the control plane's VM image has it
-        return
-    out = subprocess.run(_as_user(None, "DEBIAN_FRONTEND=noninteractive apt-get install -y -q gh"),
-                         capture_output=True, text=True)
+    # Skipped when already there, as on the control plane's VM image.
+    cmd = "command -v gh >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -q gh"
+    out = subprocess.run(_as_user(None, cmd), capture_output=True, text=True)
     if out.returncode:
         print(f"ctransfer agent: installing gh failed: {out.stderr.strip()[-500:]}", file=sys.stderr, flush=True)
 
