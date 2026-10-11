@@ -279,3 +279,14 @@ def test_mcp_servers_follow_the_session_except_those_holding_literal_credentials
     assert project["mcpServers"] == {"notion": notion} and project["enabledMcpjsonServers"] == ["db"]
     assert project["hasTrustDialogAccepted"]
     assert "oauthAccount" not in cfg and not any(p.endswith("/somewhere/else") for p in cfg["projects"])
+
+
+def test_a_claude_cli_already_on_the_vm_is_recognized(tmp_path):
+    """A VM booted from an image with the CLI baked in skips installing the same version again."""
+    home = tmp_path / "home"
+    assert agent.installed_claude_version(home, None) is None
+    binary = home / ".local" / "bin" / "claude"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\necho '2.1.296 (Claude Code)'\n")
+    binary.chmod(0o755)
+    assert agent.installed_claude_version(home, None) == "2.1.296"

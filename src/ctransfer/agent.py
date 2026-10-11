@@ -131,7 +131,7 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
     github = _setup_github(home, user, secrets)
     if launch:
         _write_env(home, user, boot["claude_token"], secrets)
-        _install_claude(user, boot.get("claude_version"))
+        _install_claude(home, user, boot.get("claude_version"))
         if github:
             _install_gh()
         if boot.get("run"):
@@ -191,14 +191,30 @@ def _setup_github(home: Path, user: str | None, secrets: dict[str, str]) -> bool
 
 def _install_gh() -> None:
     """The GitHub CLI, for opening and answering pull requests. Best effort: a session without it still runs."""
-    out = subprocess.run(_as_user(None, "DEBIAN_FRONTEND=noninteractive apt-get install -y -q gh"),
-                         capture_output=True, text=True)
+    # Skipped when already there, as on the control plane's VM image.
+    cmd = "command -v gh >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -q gh"
+    out = subprocess.run(_as_user(None, cmd), capture_output=True, text=True)
     if out.returncode:
         print(f"ctransfer agent: installing gh failed: {out.stderr.strip()[-500:]}", file=sys.stderr, flush=True)
 
 
-def _install_claude(user: str | None, version: str | None) -> None:
-    arg = version if version and version != "latest" else ""
+def installed_claude_version(home: Path, user: str | None) -> str | None:
+    """The version of the Claude CLI already in ~/.local/bin (the control plane's VM image has one), if any."""
+    binary = home / ".local" / "bin" / "claude"
+    if not binary.exists():
+        return None
+    out = subprocess.run(_as_user(user, f"{shlex.quote(str(binary))} --version"), capture_output=True, text=True)
+    words = out.stdout.split()  # "2.1.296 (Claude Code)"
+    return words[0] if out.returncode == 0 and words else None
+
+
+def _install_claude(home: Path, user: str | None, version: str | None) -> None:
+    """The session's Claude Code version; any installed one will do when the session's is unknown."""
+    wanted = version if version and version != "latest" else ""
+    installed = installed_claude_version(home, user)
+    if installed and (installed == wanted or not wanted):
+        return
+    arg = wanted
     subprocess.run(_as_user(user, f"curl -fsSL https://claude.ai/install.sh | bash -s {arg}"), check=True)
 
 
