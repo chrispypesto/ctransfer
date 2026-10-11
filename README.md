@@ -10,7 +10,7 @@ Into any Python 3.10+ environment (venv, pipx, uv, conda, …):
 
 ```bash
 pip install "git+https://github.com/chrispypesto/ctransfer.git"
-ctransfer login                            # GitHub device flow
+ctransfer login                            # GitHub device flow; signing in accepts the Terms of Use
 claude setup-token | ctransfer token set   # the Claude token your VMs run on
 ```
 
@@ -126,6 +126,10 @@ How a run works:
 - `--timeout` bounds each run (default and maximum: the free tier's run limit, 30 minutes on the hosted control plane).
 - Runs count against the free tier like pushes do: launches per day, VM-hours, and the one VM at a time. A run that a limit refuses shows as `refused` in `cron logs`.
 - A run doesn't start while the previous one is still going.
+
+## Terms, privacy and license
+
+Using the hosted service means agreeing to the [Terms of Use](https://ctransfer.itschrispy.com/terms) ([TERMS.md](TERMS.md)). The [Privacy Policy](https://ctransfer.itschrispy.com/privacy) ([PRIVACY.md](PRIVACY.md)) says what the service stores, for how long, and how `ctransfer account delete` removes it. The client and plugin in this repo are MIT licensed ([LICENSE](LICENSE)).
 
 ## Layout
 

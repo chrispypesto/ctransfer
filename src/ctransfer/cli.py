@@ -259,6 +259,8 @@ def cmd_resume(args) -> None:
 
 
 def cmd_login(args) -> None:
+    _print(f"By signing in you agree to the Terms of Use ({api_mod.TERMS_URL}) and the Privacy Policy "
+           f"({api_mod.PRIVACY_URL}).")
     out = api_mod.login(api_mod.Api.from_config(signed_in=False), notify=_print)
     cfg = api_mod.load_config()
     cfg["token"] = out["token"]
