@@ -572,7 +572,7 @@ def cmd_usage(args) -> None:
     def of(key, unit=""):
         return f" of {limits[key]:g}{unit}" if key in limits else unit
 
-    credit = u.get("credit_usd") or 0
+    credit = round(u.get("credit_usd") or 0, 2)  # in cents, as shown: no "-$0.00" or "$0.00 kept"
     if u.get("plan") == "pro":
         lines = [f"plan: Pro, {_usd(credit)} credit left (add credit: {account_url})"]
     else:
@@ -580,8 +580,8 @@ def cmd_usage(args) -> None:
         if credit > 0:  # credit added on Pro stays when it ends, and is spent again on Pro
             lines.append(f"  {_usd(credit)} of credit kept on your account, usable again if you subscribe to Pro")
         elif credit < 0:
-            lines.append(f"  your credit is {_usd(credit)} after a refunded or disputed payment; "
-                         "credit you add on Pro covers it first")
+            lines.append(f"  your credit is {_usd(credit)}; if you subscribe to Pro again, it comes out of your next "
+                         "credit first")
     lines += [f"this month ({u['month']}):",
              f"  VM-hours     {u['billed_hours'] + u['open_hours']}{of('monthly_vm_hours')} "
              f"({u['open_hours']} on VMs still running)",
