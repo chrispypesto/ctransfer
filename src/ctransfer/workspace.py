@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import os
 import subprocess
 import tarfile
@@ -101,7 +102,7 @@ def _capture_git(root: Path, out: Path) -> dict:
     # Who commits here (from the repo's or the user's git config), so commits made on the VM carry the same author.
     identity = {key: value for key in ("name", "email") if (value := _try_git(root, "config", f"user.{key}"))}
     return {"kind": "git", "root": str(root), "head": head, "branch": branch, "remotes": remotes, "identity": identity,
-            "skipped": sorted(skipped)}
+            "skipped": sorted(skipped), "changes": changes_digest(root)}
 
 
 def _capture_tree(root: Path, out: Path) -> dict:
@@ -158,48 +159,154 @@ def restore_fresh(meta: dict, src, root) -> None:
     _apply_dirty(root, src)
 
 
-def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = False, dry_run: bool = False) -> list[str]:
-    """Bring an existing local workspace up to a captured one (the pull direction).
+def changes_digest(root) -> str | None:
+    """A fingerprint of the uncommitted work in a git repo: HEAD, the diff against it and the untracked files,
+    leaving out untracked credential files (they never travel, and pull leaves them alone).
 
-    Returns a list of problems. With dry_run nothing in the working tree changes (the bundle's
-    refs are still fetched into refs/ctransfer/remote/*). Raises WorkspaceError on failure.
+    Pull compares it with the one recorded at push to tell the changes that were pushed (which the cloud copy
+    already has) from edits made afterwards. None when a tracked credential file is modified: that change never
+    left this machine, so it must never be taken for pushed work.
     """
-    src, root = Path(src).resolve(), Path(root)
-    if meta["kind"] == "tree":
-        if not dry_run:
-            root.mkdir(parents=True, exist_ok=True)
-            _extract(src / "tree.tar", root)
-        return []
+    root = Path(root)
+    changed = _split_z(git(root, "diff", "--name-only", "-z", "HEAD"))
+    if any(is_secret_name(c) for c in changed):
+        return None
+    h = hashlib.sha256()
+    h.update(git_bytes(root, "rev-parse", "HEAD"))
+    h.update(git_bytes(root, "diff", "--binary", "HEAD"))
+    for u in sorted(_untracked(root)):
+        h.update(b"\0untracked\0" + u.encode() + b"\0")
+        path = root / u
+        h.update(hashlib.sha256(os.readlink(path).encode() if path.is_symlink() else path.read_bytes()).digest())
+    return h.hexdigest()
+
+
+def _untracked(root: Path) -> list[str]:
+    """Untracked files the cloud copy can have, i.e. not ignored and not credentials."""
+    return [u for u in _split_z(git(root, "ls-files", "--others", "--exclude-standard", "-z")) if not is_secret_name(u)]
+
+
+def _uncommitted(root: Path) -> bool:
+    """Whether the repo has changes beyond untracked credential files."""
+    entries = _split_z(git(root, "status", "--porcelain", "-z", "--untracked-files=all"))
+    return any(not (e.startswith("?? ") and is_secret_name(e[3:])) for e in entries)
+
+
+def _local_state(root: Path, *, branch: str | None, target: str, pushed_changes: str | None) -> dict:
+    """What pulling a cloud copy (branch at commit target) over the repo at root would run into."""
+    uncommitted = _uncommitted(root)
+    as_pushed = uncommitted and pushed_changes is not None and changes_digest(root) == pushed_changes
+    branch_exists = bool(branch and _try_git(root, "rev-parse", "--verify", "-q", f"refs/heads/{branch}"))
+    diverged = False
+    if branch_exists:
+        tip = git(root, "rev-parse", f"refs/heads/{branch}").strip()
+        diverged = tip != target and _try_git(root, "merge-base", "--is-ancestor", tip, target) is None
+    return {"new_changes": uncommitted and not as_pushed, "as_pushed": as_pushed, "branch_exists": branch_exists,
+            "diverged": diverged}
+
+
+def _problems(root: Path, state: dict, *, branch: str | None, stash: bool, force: bool) -> list[str]:
+    problems = []
+    if state["new_changes"] and not stash:
+        problems.append(f"{root} has uncommitted changes the cloud copy doesn't have (commit them, or pass --stash "
+                        "to set them aside as a git stash)")
+    if state["diverged"] and not force:
+        problems.append(f"local branch {branch} has commits the cloud copy lacks (pass --force to reset it)")
+    return problems
+
+
+def check_local(root, *, branch: str | None, target: str, stash: bool = False, force: bool = False,
+                pushed_changes: str | None = None) -> list[str]:
+    """Why a pull of a cloud copy that grew out of commit target on branch could not go over the repo at root;
+    [] if it could. Uncommitted changes that fingerprint as pushed_changes (see changes_digest) don't count:
+    the cloud copy already has them. Nothing is changed."""
+    root = Path(root)
     if _toplevel(root) is None:
         return [f"{root} is not a git repository"]
-    problems = []
+    state = _local_state(root, branch=branch, target=target, pushed_changes=pushed_changes)
+    return _problems(root, state, branch=branch, stash=stash, force=force)
+
+
+def check_existing(meta: dict, src, root, *, stash: bool = False, force: bool = False,
+                   pushed_changes: str | None = None) -> list[str]:
+    """check_local against a captured workspace: why apply_existing would refuse; [] if it wouldn't. Only the
+    bundle's refs are fetched (into refs/ctransfer/remote/*); the working tree is not touched."""
+    if meta["kind"] == "tree":
+        return []
+    src, root = Path(src).resolve(), Path(root)
+    if _toplevel(root) is None:
+        return [f"{root} is not a git repository"]
+    _fetch(root, src)
+    return check_local(root, branch=meta.get("branch"), target=meta["head"], stash=stash, force=force,
+                       pushed_changes=pushed_changes)
+
+
+def _cloud_copy_has(root: Path, src: Path, target: str, path: str) -> bool:
+    """Whether the captured workspace at src (HEAD target) has the file at path with the same bytes as root has,
+    either untracked or committed."""
+    local = root / path
+    if local.is_symlink() or not local.is_file():
+        return False
+    data = local.read_bytes()
+    untracked = src / "untracked.tar"
+    if untracked.exists():
+        with tarfile.open(untracked) as tf:
+            try:
+                member = tf.extractfile(path)
+            except KeyError:
+                member = None
+            if member is not None and member.read() == data:
+                return True
+    try:
+        return git_bytes(root, "cat-file", "blob", f"{target}:{path}") == data
+    except WorkspaceError:
+        return False
+
+
+def _fetch(root: Path, src: Path) -> None:
     bundle = str(src / "repo.bundle")
     git(root, "fetch", "-q", bundle, "+refs/heads/*:refs/ctransfer/remote/*")
     git(root, "fetch", "-q", bundle, "HEAD")
+
+
+def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = False,
+                   pushed_changes: str | None = None) -> str | None:
+    """Bring an existing local workspace up to a captured one (the pull direction).
+
+    Uncommitted changes that are exactly what was pushed (pushed_changes, see changes_digest) are replaced by the
+    cloud copy, which grew out of them. Newer ones are stashed with stash, else (like a diverged branch without
+    force) it raises WorkspaceError and changes nothing. Returns the stash's message when one was made.
+    """
+    src, root = Path(src).resolve(), Path(root)
+    if meta["kind"] == "tree":
+        root.mkdir(parents=True, exist_ok=True)
+        _extract(src / "tree.tar", root)
+        return None
+    if _toplevel(root) is None:
+        raise WorkspaceError(f"{root} is not a git repository")
+    _fetch(root, src)
     target, branch = meta["head"], meta.get("branch")
+    state = _local_state(root, branch=branch, target=target, pushed_changes=pushed_changes)
+    problems = _problems(root, state, branch=branch, stash=stash, force=force)
+    if problems:
+        raise WorkspaceError("; ".join(problems))
+
     local_head = _try_git(root, "rev-parse", "--verify", "-q", "HEAD")
-
-    # Untracked credential files never left this machine and the cloud copy won't touch them,
-    # so they neither count as local changes nor get stashed.
-    entries = _split_z(git(root, "status", "--porcelain", "-z", "--untracked-files=all"))
-    secrets = [e[3:] for e in entries if e.startswith("?? ") and is_secret_name(e[3:])]
-    dirty = len(entries) > len(secrets)
-    if dirty and not stash:
-        problems.append(f"{root} has uncommitted changes (commit them or pass --stash)")
-    branch_exists = bool(branch and _try_git(root, "rev-parse", "--verify", "-q", f"refs/heads/{branch}"))
-    if branch_exists:
-        tip = git(root, "rev-parse", f"refs/heads/{branch}").strip()
-        if tip != target and _try_git(root, "merge-base", "--is-ancestor", tip, target) is None and not force:
-            problems.append(f"local branch {branch} has commits the cloud copy lacks (pass --force to reset it)")
-    if dry_run or problems:
-        return problems
-
-    if dirty:
-        git(root, "stash", "push", "-q", "-u", "-m", f"ctransfer pull {int(time.time())}",
-            "--", ".", *[f":(exclude,literal){s}" for s in secrets])
+    stashed = None
+    if state["as_pushed"]:
+        git(root, "reset", "-q", "--hard")
+        for u in _untracked(root):
+            (root / u).unlink()
+    elif state["new_changes"]:
+        # Untracked credential files never left this machine and the cloud copy won't touch them, and untracked
+        # files the cloud copy brings back unchanged would only be in the way when the stash is popped: both stay.
+        keep = [u for u in _split_z(git(root, "ls-files", "--others", "--exclude-standard", "-z"))
+                if is_secret_name(u) or _cloud_copy_has(root, src, target, u)]
+        stashed = f"ctransfer pull {int(time.time())}"
+        git(root, "stash", "push", "-q", "-u", "-m", stashed, "--", ".", *[f":(exclude,literal){k}" for k in keep])
     if local_head:
         git(root, "update-ref", f"refs/ctransfer/backup/{int(time.time())}", local_head)
-    if branch_exists:
+    if state["branch_exists"]:
         git(root, "checkout", "-q", branch)
         git(root, "reset", "-q", "--hard", target)  # fast-forward, or forced reset after the check above
     elif branch:
@@ -207,4 +314,4 @@ def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
     else:
         git(root, "checkout", "-q", "--detach", target)
     _apply_dirty(root, src)
-    return []
+    return stashed
