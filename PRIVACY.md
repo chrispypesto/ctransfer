@@ -1,10 +1,10 @@
 # ctransfer Privacy Policy
 
-**Effective October 11, 2026.**
+**Effective October 12, 2026.**
 
 This Privacy Policy describes how itschrispy ("**we**," "**us**," or "**our**") collects, uses, shares and deletes personal information in connection with ctransfer: the hosted control plane at `api.ctransfer.itschrispy.com`, the cloud virtual machines it starts for you ("**VMs**"), the website at `ctransfer.itschrispy.com`, and the `ctransfer` client and Claude Code plugin when used with them (together, the "**Service**"). Capitalized terms not defined here have the meaning given in our [Terms of Use](https://ctransfer.itschrispy.com/terms).
 
-**Summary.** We collect what we need to move your Claude Code sessions to a VM and back: your GitHub identity, the sessions you send, and the credentials you choose to store. We do not sell your information, use it for advertising, or use it to train AI models. Bundles are deleted within 7 days, VMs are deleted when their session ends, and `ctransfer account delete` removes the rest. If you are a California resident, see [State privacy rights](#state-privacy-rights). If you are in the European Economic Area or the United Kingdom ("**Europe**"), see [Notice to European users](#notice-to-european-users).
+**Summary.** We collect what we need to move your Claude Code sessions to a VM and back: your GitHub identity, the sessions you send, and the credentials you choose to store. We do not sell your information, use it for advertising, or use it to train AI models. Bundles are deleted within 7 days, VMs are deleted when their session ends, and `ctransfer account delete` removes the rest, except the few records listed under [Retention](#retention). If you are a California resident, see [State privacy rights](#state-privacy-rights). If you are in the European Economic Area or the United Kingdom ("**Europe**"), see [Notice to European users](#notice-to-european-users).
 
 ## Personal information we collect
 
@@ -19,6 +19,8 @@ This Privacy Policy describes how itschrispy ("**we**," "**us**," or "**our**") 
 **While a VM runs.** Your session runs on the VM with Claude Code, which connects directly to Anthropic using the Claude account or API key you provided, and to any other services your session uses. We do not see that traffic. The VM reports to us only whether Claude is busy or idle, and, for scheduled runs, the run's result.
 
 **If you buy the Pro plan or credit.** Stripe, as merchant of record, collects your payment details, email address and billing address at checkout; we never see your card or bank details. Stripe tells us your Stripe customer ID, your subscription's status and renewal date, and the amount of each purchase (without tax). We keep those and your credit balance.
+
+**Records we create about your account.** If we suspend your account, we record your GitHub user ID, when, why and which administrator did it. When your sign-ins are ended (because you deleted your account, or we signed you out), we record your GitHub user ID and the time.
 
 **Communications.** If you email us, we keep your email address and our correspondence.
 
@@ -54,11 +56,13 @@ We do not look at Your Content except when you ask us to (for example, to help w
 | Claude token and secrets | until you remove them (`ctransfer token rm`, `ctransfer secret rm`) |
 | Your account, session records, schedules and run results | while your account exists |
 | Your plan, Stripe customer and subscription IDs, and credit balance | while your account exists |
+| A suspension of your account (your GitHub user ID, when, why and by which administrator) | until we lift it, even if you delete your account |
+| That your sign-ins were ended, by deleting your account or by us (your GitHub user ID and the time) | 30 days, until every sign-in from before then has expired |
 | Operational logs | 14 days |
 | VM infrastructure state (includes your GitHub user ID and session IDs) | up to 30 days after the VM is deleted |
 | Emails | as long as needed to handle your request, and as required by law |
 
-**Deleting your account.** `ctransfer account delete` immediately stops your VMs, cancels your Pro subscription, and deletes your bundles, schedules and their snapshots, Claude token, secrets, account record, billing record, session details and run results. It also asks Stripe to delete your Stripe customer; Stripe keeps the records of past payments it must keep as merchant of record. To keep the free tier's limits fair, we keep a record of the VM time each of your sessions used (your GitHub user ID, timestamps, VM hours and bundle sizes, without session details) for 35 days, then delete it. Operational logs and VM infrastructure state expire on the schedule above. You can also ask us to delete your account by emailing chris@itschrispy.com.
+**Deleting your account.** `ctransfer account delete` immediately stops your VMs, cancels your Pro subscription, and deletes your bundles, schedules and their snapshots, Claude token, secrets, account record, billing record, session details and run results. It also asks Stripe to delete your Stripe customer; Stripe keeps the records of past payments it must keep as merchant of record. To keep the free tier's limits fair, we keep a record of the VM time each of your sessions used (your GitHub user ID, timestamps, VM hours and bundle sizes, without session details) for 35 days, then delete it. We keep your GitHub user ID and the time of the deletion for 30 days, so that sign-ins from before the deletion stop working even if you sign up again. If we suspended your account, we keep the suspension until we lift it: deleting your account and signing up again does not end it. Operational logs and VM infrastructure state expire on the schedule above. You can also ask us to delete your account by emailing chris@itschrispy.com.
 
 ## Your choices
 
@@ -107,7 +111,7 @@ This section applies to residents of U.S. states whose privacy laws apply to us 
 | Identifiers | GitHub user ID and username; session IDs; SSH public keys; Stripe customer ID | providing the Service, billing, limits, security | hosting, sign-in and payment providers | no |
 | Commercial information | your plan, purchases (amounts without tax) and credit balance | billing | payment provider | no |
 | Account credentials (sensitive) | sign-in token; Claude token and secrets you store | providing the Service | hosting provider | no |
-| Internet or electronic activity | session states, timestamps, VM usage | providing the Service, limits, security | hosting provider | no |
+| Internet or electronic activity | session states, timestamps, VM usage; records of suspensions (when, why, by which administrator) and of ended sign-ins | providing the Service, limits, security | hosting provider | no |
 | Your Content (may include any category, such as names or professional information in your files) | session bundles, prompts, run results | providing the Service | hosting provider | no |
 | Communications | emails and their content | support | email provider | no |
 
@@ -126,7 +130,7 @@ This section applies only to individuals in Europe. "Personal information" here 
 | Purpose | Legal basis |
 |---|---|
 | Providing the Service (sign-in, moving sessions, running VMs and schedules, storing credentials, billing for the Pro plan) | performance of our contract with you (the Terms) |
-| Enforcing limits, preventing abuse, security, keeping VM usage records for 35 days after account deletion | our legitimate interests in operating a fair, secure free service |
+| Enforcing limits, preventing abuse, security, keeping VM usage records for 35 days and records of suspensions and ended sign-ins after account deletion | our legitimate interests in operating a fair, secure free service |
 | Answering your messages | our legitimate interests, or performance of our contract with you |
 | Complying with law and protecting rights | compliance with legal obligations, and our legitimate interests |
 
