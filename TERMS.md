@@ -1,8 +1,8 @@
 # ctransfer Terms of Use
 
-**Version 1.1. Last revised: October 11, 2026.**
+**Version 1.2. Last revised: October 12, 2026.**
 
-ctransfer (the "**Service**") is owned and operated by itschrispy ("**we**," "**us**," or "**our**"). The Service consists of the hosted control plane at `api.ctransfer.itschrispy.com`, the cloud virtual machines it starts for you ("**VMs**"), the website at `ctransfer.itschrispy.com` (the "**Site**"), and the `ctransfer` command-line client and Claude Code plugin when used with them.
+ctransfer (the "**Service**") is owned and operated by Christopher Pestano, an individual ("**we**," "**us**," or "**our**"). The Service consists of the hosted control plane at `api.ctransfer.itschrispy.com`, the cloud virtual machines it starts for you ("**VMs**"), the website at `ctransfer.itschrispy.com` (the "**Site**"), and the `ctransfer` command-line client and Claude Code plugin when used with them.
 
 These Terms of Use ("**Terms**") govern your use of the Service. By signing in to the Service (for example with `ctransfer login`), or by otherwise accessing or using it, you agree to these Terms on behalf of yourself or the entity you represent, and you confirm that you have the authority to do so. You must be at least 18 years old to use the Service. If you do not agree to these Terms, do not use the Service.
 
@@ -80,7 +80,7 @@ These Terms remain in effect while you use the Service. You may stop using the S
 
 The provisions in this Section apply only to users subject to the laws of the states named below. If a provision in this Section conflicts with another provision of these Terms, the state-specific provision controls for users subject to that state's laws.
 
-1. **California.** Under California Civil Code Section 1789.3, California users are entitled to the following consumer rights notice: the Service is provided by itschrispy. To file a complaint regarding the Service, or to receive further information about its use, contact us at chris@itschrispy.com. You may also contact the Complaint Assistance Unit of the Division of Consumer Services of the California Department of Consumer Affairs in writing at 1625 N. Market Blvd., Suite N112, Sacramento, CA 95834, or by telephone at (800) 952-5210. California residents may have additional rights under the California Consumer Privacy Act; see the Privacy Policy.
+1. **California.** Under California Civil Code Section 1789.3, California users are entitled to the following consumer rights notice: the Service is provided by Christopher Pestano. To file a complaint regarding the Service, or to receive further information about its use, contact us at chris@itschrispy.com. You may also contact the Complaint Assistance Unit of the Division of Consumer Services of the California Department of Consumer Affairs in writing at 1625 N. Market Blvd., Suite N112, Sacramento, CA 95834, or by telephone at (800) 952-5210. California residents may have additional rights under the California Consumer Privacy Act; see the Privacy Policy.
 2. **Colorado, Connecticut, Virginia and other states with consumer privacy laws.** Residents of these states may have rights under their state's privacy law, including rights to access, correct, delete and obtain a copy of their personal data. We do not sell personal data or use it for targeted advertising or profiling. See the Privacy Policy for how to exercise your rights.
 3. **Nevada.** Nevada residents have the right under Nevada Revised Statutes Chapter 603A to direct us not to sell certain information we have collected about them. We do not sell personal information; to make a request anyway, contact chris@itschrispy.com.
 

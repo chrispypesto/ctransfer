@@ -1,8 +1,8 @@
 # ctransfer Privacy Policy
 
-**Effective October 11, 2026.**
+**Effective October 12, 2026.**
 
-This Privacy Policy describes how itschrispy ("**we**," "**us**," or "**our**") collects, uses, shares and deletes personal information in connection with ctransfer: the hosted control plane at `api.ctransfer.itschrispy.com`, the cloud virtual machines it starts for you ("**VMs**"), the website at `ctransfer.itschrispy.com`, and the `ctransfer` client and Claude Code plugin when used with them (together, the "**Service**"). Capitalized terms not defined here have the meaning given in our [Terms of Use](https://ctransfer.itschrispy.com/terms).
+This Privacy Policy describes how Christopher Pestano ("**we**," "**us**," or "**our**") collects, uses, shares and deletes personal information in connection with ctransfer: the hosted control plane at `api.ctransfer.itschrispy.com`, the cloud virtual machines it starts for you ("**VMs**"), the website at `ctransfer.itschrispy.com`, and the `ctransfer` client and Claude Code plugin when used with them (together, the "**Service**"). Capitalized terms not defined here have the meaning given in our [Terms of Use](https://ctransfer.itschrispy.com/terms).
 
 **Summary.** We collect what we need to move your Claude Code sessions to a VM and back: your GitHub identity, the sessions you send, and the credentials you choose to store. We do not sell your information, use it for advertising, or use it to train AI models. Bundles are deleted within 7 days, VMs are deleted when their session ends, and `ctransfer account delete` removes the rest. If you are a California resident, see [State privacy rights](#state-privacy-rights). If you are in the European Economic Area or the United Kingdom ("**Europe**"), see [Notice to European users](#notice-to-european-users).
 
@@ -119,7 +119,7 @@ We collect this information from you, from your sessions and VMs, and from GitHu
 
 This section applies only to individuals in Europe. "Personal information" here means "personal data" under the EU and UK General Data Protection Regulation ("**GDPR**").
 
-**Controller.** itschrispy is the controller of your personal information. Contact: chris@itschrispy.com.
+**Controller.** Christopher Pestano is the controller of your personal information. Contact: chris@itschrispy.com.
 
 **Legal bases.**
 
