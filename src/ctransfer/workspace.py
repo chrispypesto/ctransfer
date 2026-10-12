@@ -82,6 +82,9 @@ def capture(cwd, out_dir) -> dict:
 
 
 def _capture_git(root: Path, out: Path) -> dict:
+    # Fingerprint first: a file edited while the capture runs then only makes pull see a mismatch and refuse,
+    # never a match that would let pull replace an edit the bundle doesn't have.
+    changes = changes_digest(root)
     head = git(root, "rev-parse", "HEAD").strip()
     branch = _try_git(root, "symbolic-ref", "--short", "-q", "HEAD")
     git(root, "bundle", "create", "-q", str(out / "repo.bundle"), "--all")
@@ -102,7 +105,7 @@ def _capture_git(root: Path, out: Path) -> dict:
     # Who commits here (from the repo's or the user's git config), so commits made on the VM carry the same author.
     identity = {key: value for key in ("name", "email") if (value := _try_git(root, "config", f"user.{key}"))}
     return {"kind": "git", "root": str(root), "head": head, "branch": branch, "remotes": remotes, "identity": identity,
-            "skipped": sorted(skipped), "changes": changes_digest(root)}
+            "skipped": sorted(skipped), "changes": changes}
 
 
 def _capture_tree(root: Path, out: Path) -> dict:
