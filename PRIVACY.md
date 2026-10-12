@@ -18,15 +18,18 @@ This Privacy Policy describes how itschrispy ("**we**," "**us**," or "**our**") 
 
 **While a VM runs.** Your session runs on the VM with Claude Code, which connects directly to Anthropic using the Claude account or API key you provided, and to any other services your session uses. We do not see that traffic. The VM reports to us only whether Claude is busy or idle, and, for scheduled runs, the run's result.
 
+**If you buy the Pro plan or credit.** Stripe, as merchant of record, collects your payment details, email address and billing address at checkout; we never see your card or bank details. Stripe tells us your Stripe customer ID, your subscription's status and renewal date, and the amount of each purchase (without tax). We keep those and your credit balance.
+
 **Communications.** If you email us, we keep your email address and our correspondence.
 
-**Technical information.** Our hosting providers process your IP address and request details in order to deliver the Service. We do not record IP addresses in our records. Our operational logs record events and errors, which may include details of a failed request. The website does not use cookies, analytics or other tracking technologies, and loads no third-party content. The client sends no telemetry; it stores your sign-in token and the SSH keys for your sessions on your own machine.
+**Technical information.** Our hosting providers process your IP address and request details in order to deliver the Service. We do not record IP addresses in our records. Our operational logs record events and errors, which may include details of a failed request. The website does not use cookies, analytics or other tracking technologies, and loads no third-party content. When you sign in on the website's account page, your browser keeps your sign-in token in its local storage until you sign out; signing in there sends you to GitHub, and paying sends you to Stripe. The client sends no telemetry; it stores your sign-in token and the SSH keys for your sessions on your own machine.
 
 ## How we use personal information
 
 We use personal information to:
 
 - **provide the Service**: sign you in, store and move your sessions, start and stop VMs, give each VM your session and credentials, run your schedules, and show you your sessions and usage;
+- **bill for the Pro plan**: know which plan you are on, add the credit you buy, and charge your VM usage against it;
 - **enforce limits and keep the Service secure**: apply the free tier's limits, prevent abuse (for example, one account per person), investigate security incidents and violations of the Terms, and keep the Service running within its budget;
 - **communicate with you**: answer your messages and tell you about changes to the Service or these policies; and
 - **comply with law**: respond to lawful requests and legal process, and protect our rights and those of others.
@@ -36,6 +39,7 @@ We do not look at Your Content except when you ask us to (for example, to help w
 ## How we share personal information
 
 - **Service providers.** Amazon Web Services hosts the Service in the United States (`us-east-1`): storage, databases, encrypted parameter storage, serverless functions, VMs and content delivery. GitHub provides sign-in. Zoho provides our email. They process personal information on our behalf.
+- **Stripe.** If you buy the Pro plan or credit, Stripe processes the payment as merchant of record, under its own [privacy policy](https://stripe.com/privacy). We share your GitHub user ID with Stripe so payments reach the right account.
 - **Services you use.** Your VMs run Claude Code, which sends your session to Anthropic under your own agreement with Anthropic. Your sessions may also connect to services you configure, such as GitHub repositories or MCP servers. These are your choices, and those services' own privacy policies apply.
 - **Authorities and others.** Law enforcement, government authorities and private parties, when we believe in good faith that it is required by law or necessary to protect rights, safety or property.
 - **Business transfers.** An acquirer, successor or assignee, in connection with a merger, acquisition, sale of assets or similar transaction, subject to this Privacy Policy.
@@ -49,11 +53,12 @@ We do not look at Your Content except when you ask us to (for example, to help w
 | VMs and what is on them | until the session is brought home or ended; a VM is brought home after 2 hours idle or 24 hours at most |
 | Claude token and secrets | until you remove them (`ctransfer token rm`, `ctransfer secret rm`) |
 | Your account, session records, schedules and run results | while your account exists |
+| Your plan, Stripe customer and subscription IDs, and credit balance | while your account exists |
 | Operational logs | 14 days |
 | VM infrastructure state (includes your GitHub user ID and session IDs) | up to 30 days after the VM is deleted |
 | Emails | as long as needed to handle your request, and as required by law |
 
-**Deleting your account.** `ctransfer account delete` immediately stops your VMs and deletes your bundles, schedules and their snapshots, Claude token, secrets, account record, session details and run results. To keep the free tier's limits fair, we keep a record of the VM time each of your sessions used (your GitHub user ID, timestamps, VM hours and bundle sizes, without session details) for 35 days, then delete it. Operational logs and VM infrastructure state expire on the schedule above. You can also ask us to delete your account by emailing chris@itschrispy.com.
+**Deleting your account.** `ctransfer account delete` immediately stops your VMs, cancels your Pro subscription, and deletes your bundles, schedules and their snapshots, Claude token, secrets, account record, billing record, session details and run results. It also asks Stripe to delete your Stripe customer; Stripe keeps the records of past payments it must keep as merchant of record. To keep the free tier's limits fair, we keep a record of the VM time each of your sessions used (your GitHub user ID, timestamps, VM hours and bundle sizes, without session details) for 35 days, then delete it. Operational logs and VM infrastructure state expire on the schedule above. You can also ask us to delete your account by emailing chris@itschrispy.com.
 
 ## Your choices
 
@@ -99,7 +104,8 @@ This section applies to residents of U.S. states whose privacy laws apply to us 
 
 | Category (California law) | What | Purpose | Disclosed for a business purpose to | Sold or shared |
 |---|---|---|---|---|
-| Identifiers | GitHub user ID and username; session IDs; SSH public keys | providing the Service, limits, security | hosting and sign-in providers | no |
+| Identifiers | GitHub user ID and username; session IDs; SSH public keys; Stripe customer ID | providing the Service, billing, limits, security | hosting, sign-in and payment providers | no |
+| Commercial information | your plan, purchases (amounts without tax) and credit balance | billing | payment provider | no |
 | Account credentials (sensitive) | sign-in token; Claude token and secrets you store | providing the Service | hosting provider | no |
 | Internet or electronic activity | session states, timestamps, VM usage | providing the Service, limits, security | hosting provider | no |
 | Your Content (may include any category, such as names or professional information in your files) | session bundles, prompts, run results | providing the Service | hosting provider | no |
@@ -119,7 +125,7 @@ This section applies only to individuals in Europe. "Personal information" here 
 
 | Purpose | Legal basis |
 |---|---|
-| Providing the Service (sign-in, moving sessions, running VMs and schedules, storing credentials) | performance of our contract with you (the Terms) |
+| Providing the Service (sign-in, moving sessions, running VMs and schedules, storing credentials, billing for the Pro plan) | performance of our contract with you (the Terms) |
 | Enforcing limits, preventing abuse, security, keeping VM usage records for 35 days after account deletion | our legitimate interests in operating a fair, secure free service |
 | Answering your messages | our legitimate interests, or performance of our contract with you |
 | Complying with law and protecting rights | compliance with legal obligations, and our legitimate interests |

@@ -16,7 +16,13 @@ claude setup-token | ctransfer token set   # the Claude token your VMs run on
 
 From a checkout, `make install` installs it into the active environment's Python (`make install PYTHON=/path/to/python` picks another).
 
-No AWS credentials are needed. `ctransfer ssh` uses a key that `push` generates for each transfer (`~/.config/ctransfer/keys/<id>`), so it works from the machine that pushed. `ctransfer usage` shows your free-tier usage.
+No AWS credentials are needed. `ctransfer ssh` uses a key that `push` generates for each transfer (`~/.config/ctransfer/keys/<id>`), so it works from the machine that pushed. `ctransfer usage` shows your plan, credit and usage.
+
+## Plans
+
+Every account starts on the free tier: one nano VM at a time, with daily and monthly limits that `ctransfer usage` shows. Pro is a monthly subscription that includes a month's worth of VM credit, lets you add more credit whenever you like, and raises the limits: more VMs at once, more launches, longer scheduled runs, bigger bundles, and bigger VMs (`--size small` for 2 GB, `--size large` for 8 GB on `push`, `new` and `cron add`). Pro VMs are charged from your credit per started hour; when it runs out they are brought home, and you can `pull` them as usual.
+
+You subscribe, add credit and cancel only on the website's [account page](https://ctransfer.itschrispy.com/account), signed in with the same GitHub account. Prices and hourly rates are listed there.
 
 ## `/ctransfer` in Claude Code
 
@@ -29,11 +35,11 @@ The plugin needs the CLI installed. It runs `$CTRANSFER_BIN` if set, otherwise `
 
 | Command | Does |
 |---|---|
-| `/ctransfer [push] [--remote-control] [--no-file-history]` | push **this** session once it is idle |
+| `/ctransfer [push] [--remote-control] [--no-file-history] [--size=large]` | push **this** session once it is idle (`--size` needs Pro) |
 | `/ctransfer push [--flags] <prompt>` | same, and the cloud session runs `<prompt>` as soon as it arrives |
 | `/ctransfer new [--remote-control] [prompt]` | start a **new** session on a cloud VM in a copy of this project; this session carries on |
 | `/ctransfer status [id]` | this session's push (state, cloud state, log tail), or one transfer |
-| `/ctransfer ls`, `pull <id>`, `rm <id>` | same as the CLI |
+| `/ctransfer ls`, `usage`, `pull <id>`, `rm <id>` | same as the CLI |
 
 What `/ctransfer` does:
 1. It queues a background `ctransfer push --current --when-idle`. `--current` resolves the session from `CLAUDE_CODE_SESSION_ID`, so it pushes this exact session, not the newest one in the directory.
@@ -49,6 +55,7 @@ What `/ctransfer` does:
 
 ```bash
 ctransfer push [--remote-control]  # the newest session in this directory (it names it), to a VM; waits until running
+ctransfer push --size large        # same, on an 8 GB VM (Pro; `small` is 2 GB, the default `nano` 0.5 GB)
 ctransfer push "keep going, then run the tests"   # same, and the VM's claude starts on this right away
 #   then /exit the local session: continuing locally makes the two copies diverge
 ctransfer new ["first prompt"]     # start a fresh session on a VM in a copy of this directory
@@ -124,8 +131,8 @@ How a run works:
 - Every run forks the same snapshot, so runs never add to each other's context and the session stays the size it was when you pushed it. To keep some continuity, each run's system prompt includes short summaries of the last five runs (400 characters each, about 2 KB in all).
 - Edits on the VM are thrown away when the run ends unless the task commits and pushes them.
 - Runs can't ask for permission. `--permission-mode` (`default`, `acceptEdits`, `plan`, `bypassPermissions`) sets the mode. With `default`, the allow rules in your `settings.json` apply, and `cron logs` shows how many tool calls were denied.
-- `--timeout` bounds each run (default and maximum: the free tier's run limit, 30 minutes on the hosted control plane).
-- Runs count against the free tier like pushes do: launches per day, VM-hours, and the one VM at a time. A run that a limit refuses shows as `refused` in `cron logs`.
+- `--timeout` bounds each run (default and maximum: your plan's run limit, which `ctransfer usage` shows). `--size` picks the runs' VM size (Pro).
+- Runs count against your plan like pushes do: launches per day, VMs at once, and VM-hours (free) or credit (Pro). A run that a limit refuses shows as `refused` in `cron logs`.
 - A run doesn't start while the previous one is still going.
 
 ## Terms, privacy and license

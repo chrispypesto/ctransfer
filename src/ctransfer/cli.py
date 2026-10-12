@@ -140,8 +140,8 @@ def build_push_bundle(path: Path, info: sessions.SessionInfo, *, home: Path, fil
 
 
 def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = False, file_history: bool = True,
-         prompt: str | None = None, wait: bool = True, keys: Path | None = None, sleep=time.sleep,
-         on_launch=None) -> dict:
+         prompt: str | None = None, size: str | None = None, wait: bool = True, keys: Path | None = None,
+         sleep=time.sleep, on_launch=None) -> dict:
     """Send a session to a new cloud VM; with a prompt, the VM's claude resumes straight into that turn."""
     def build(path: Path) -> dict:
         return bundle.build(path, kind="push", home=home, session_id=info.session_id, project_dir=info.project_dir,
@@ -152,7 +152,7 @@ def push(api, info: sessions.SessionInfo, *, home: Path, remote_control: bool = 
     if resume_as:
         effort = f" at {resume_as[3]} effort" if len(resume_as) == 4 else ""
         _print(f"the session continues on {resume_as[1]}{effort}, as it last ran")
-    return _send(api, info.session_id, info.cwd, build, remote_control=remote_control, wait=wait, keys=keys,
+    return _send(api, info.session_id, info.cwd, build, remote_control=remote_control, size=size, wait=wait, keys=keys,
                  sleep=sleep, on_launch=on_launch)
 
 
@@ -167,8 +167,8 @@ def local_claude_version() -> str | None:
 
 
 def new_session(api, cwd: str, *, home: Path, session_id: str | None = None, prompt: str | None = None,
-                remote_control: bool = False, wait: bool = True, keys: Path | None = None, sleep=time.sleep,
-                on_launch=None) -> dict:
+                remote_control: bool = False, size: str | None = None, wait: bool = True, keys: Path | None = None,
+                sleep=time.sleep, on_launch=None) -> dict:
     """Start a fresh session on a new cloud VM, in a copy of the project at cwd, optionally with a first prompt."""
     cwd = str(Path(cwd).resolve())
     session_id = session_id or str(uuid.uuid4())
@@ -179,12 +179,12 @@ def new_session(api, cwd: str, *, home: Path, session_id: str | None = None, pro
                             include_agent=True, claude_version=local_claude_version(),
                             extra={"prompt": prompt} if prompt else None)
 
-    return _send(api, session_id, cwd, build, remote_control=remote_control, wait=wait, keys=keys, sleep=sleep,
-                 on_launch=on_launch)
+    return _send(api, session_id, cwd, build, remote_control=remote_control, size=size, wait=wait, keys=keys,
+                 sleep=sleep, on_launch=on_launch)
 
 
-def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, wait: bool, keys: Path | None, sleep,
-          on_launch) -> dict:
+def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, size: str | None, wait: bool,
+          keys: Path | None, sleep, on_launch) -> dict:
     """Build a bundle with build(path), upload it to a new transfer, launch its VM and (with wait) wait for running."""
     keys = keys or keys_dir()
     with tempfile.TemporaryDirectory(prefix="ctransfer-push-") as tmp:
@@ -195,7 +195,7 @@ def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, wait: 
         report_bundle(path, manifest)
         created = api.call("POST", "/sessions", {"session_id": session_id, "cwd": cwd,
                                                  "claude_version": manifest["claude_version"], "remote_control": remote_control,
-                                                 "ssh_pubkey": key.with_suffix(".pub").read_text().strip()})
+                                                 "ssh_pubkey": key.with_suffix(".pub").read_text().strip(), "size": size})
         tid = created["transfer_id"]
         keys.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.move(key, keys / tid)
@@ -281,8 +281,9 @@ def cmd_account_delete(args) -> None:
         if not sys.stdin.isatty():
             raise SystemExit("account deletion needs confirmation: run it in a terminal, or add --yes")
         _print("This permanently deletes your ctransfer account: every cloud session and its VM (running ones are "
-               "stopped without being brought back), your schedules, your Claude token and secrets. Sessions on "
-               "this machine are not touched.")
+               "stopped without being brought back), your schedules, your Claude token and secrets. A Pro "
+               "subscription is cancelled at once and any credit left is lost. Sessions on this machine are not "
+               "touched.")
         if input("Type 'delete' to confirm: ").strip() != "delete":
             raise SystemExit("not deleted")
     out = api.call("DELETE", "/me")
@@ -376,7 +377,7 @@ def cmd_push(args) -> None:
             raise SystemExit(f"session {sid} is mid-turn; wait for it to go idle (or pass --allow-busy/--when-idle)")
         track(state="pushing")
         item = push(api_mod.Api.from_config(), info, home=sessions.claude_home(), remote_control=args.remote_control,
-                    file_history=not args.no_file_history, prompt=prompt_arg(args), wait=not args.no_wait,
+                    file_history=not args.no_file_history, prompt=prompt_arg(args), size=args.size, wait=not args.no_wait,
                     on_launch=lambda tid: track(state="launching", transfer_id=tid))
     except BaseException as e:
         track(state="failed", error=str(e) or type(e).__name__)
@@ -398,7 +399,7 @@ def _detach_push(args, sid: str) -> None:
         raise SystemExit(f"a push of session {sid} is already {active['state']} (see ctransfer status --current)")
     log = log_path(sid)
     cmd = ["push", "--session", sid, "--track", *_flags(args, "remote_control", "no_file_history", "allow_busy",
-                                                          "no_wait", "when_idle")]
+                                                          "no_wait", "when_idle"), *_size_flag(args)]
     prompt = prompt_arg(args)
     if prompt:
         cmd += ["--", prompt]
@@ -415,6 +416,10 @@ def log_path(session_id: str) -> Path:
 
 def _flags(args, *names: str) -> list[str]:
     return ["--" + name.replace("_", "-") for name in names if getattr(args, name)]
+
+
+def _size_flag(args) -> list[str]:
+    return ["--size", args.size] if args.size else []
 
 
 def _spawn_worker(cli_args: list[str], log: Path) -> int:
@@ -442,14 +447,14 @@ def cmd_new(args) -> None:
     if args.detach:
         api_mod.Api.from_config()  # fail now, in the caller's terminal, if not signed in
         log = log_path(sid)
-        cmd = ["new", "--session-id", sid, "--cwd", cwd, *_flags(args, "remote_control", "no_wait"),
+        cmd = ["new", "--session-id", sid, "--cwd", cwd, *_flags(args, "remote_control", "no_wait"), *_size_flag(args),
                *(["--", prompt] if prompt else [])]
         _spawn_worker(cmd, log)
         print(f"starting new cloud session {sid} for {cwd} in the background.\n"
               f"progress: {log}  (`ctransfer ls` shows its transfer once created)")
         return
     item = new_session(api_mod.Api.from_config(), cwd, home=sessions.claude_home(), session_id=sid, prompt=prompt,
-                       remote_control=args.remote_control, wait=not args.no_wait)
+                       remote_control=args.remote_control, size=args.size, wait=not args.no_wait)
     tid = item["transfer_id"]
     where = "is running in the cloud" if item["state"] == "running" else f"is {item['state']} in the cloud"
     _print(f"\nnew session {sid} {where} as transfer {tid}")
@@ -492,7 +497,10 @@ def cmd_status(args) -> None:
              f"  created  {_local_time(item.get('created_at'))}"]
     if item.get("failure"):
         lines.append(f"  failure  {item['failure']}")
-    if item.get("export_reason") and item["export_reason"] != "user":
+    if item.get("export_reason") == "credit":
+        lines.append(f"  brought home because your credit ran out (add credit: {api_mod.ACCOUNT_URL}); "
+                     "your work is kept until you pull it")
+    elif item.get("export_reason") and item["export_reason"] != "user":
         lines.append(f"  exported by the service ({item['export_reason']}); your work is kept until you pull it")
     steps = _next_steps(item["transfer_id"], state)
     print("\n".join(lines + ([steps] if steps else [])))
@@ -552,14 +560,19 @@ def cmd_ssh(args) -> None:
 
 
 def cmd_usage(args) -> None:
-    """This user's standing against their own allowance, and whether a launch would go through right now."""
+    """This user's plan, credit and standing against their own allowance, and whether a launch would go through."""
     u = api_mod.Api.from_config().call("GET", "/me/usage")
-    limits = u.get("limits") or {}
+    limits = {k: v for k, v in (u.get("limits") or {}).items() if v is not None}
+    account_url = u.get("account_url") or api_mod.ACCOUNT_URL
 
     def of(key, unit=""):
         return f" of {limits[key]:g}{unit}" if key in limits else unit
 
-    lines = [f"your free tier this month ({u['month']}):",
+    if u.get("plan") == "pro":
+        lines = [f"plan: Pro, ${u.get('credit_usd', 0):.2f} credit left (add credit: {account_url})"]
+    else:
+        lines = [f"plan: Free (bigger VMs, more of them and pay-as-you-go hours with Pro: {account_url})"]
+    lines += [f"this month ({u['month']}):",
              f"  VM-hours     {u['billed_hours'] + u['open_hours']}{of('monthly_vm_hours')} "
              f"({u['open_hours']} on VMs still running)",
              f"  transferred  {u['bytes'] / 1e6:.0f}{of('monthly_mb', ' MB')}"]
@@ -588,14 +601,15 @@ def cmd_rm(args) -> None:
 # ---- cron: scheduled runs of a pushed session ---------------------------------------------------
 
 def cron_add(api, info: sessions.SessionInfo, *, home: Path, schedule: str, prompt: str, timeout_min: int | None = None,
-             permission_mode: str = "default", file_history: bool = False) -> dict:
+             permission_mode: str = "default", file_history: bool = False, size: str | None = None) -> dict:
     """Upload the session as the schedule's template: every run starts from this snapshot, in a fork."""
     with tempfile.TemporaryDirectory(prefix="ctransfer-cron-") as tmp:
         path = Path(tmp) / "template.tgz"
         manifest = build_push_bundle(path, info, home=home, file_history=file_history)
         created = api.call("POST", "/schedules", {
             "session_id": info.session_id, "cwd": info.cwd, "claude_version": manifest["claude_version"],
-            "cron": schedule, "prompt": prompt, "timeout_min": timeout_min, "permission_mode": permission_mode})
+            "cron": schedule, "prompt": prompt, "timeout_min": timeout_min, "permission_mode": permission_mode,
+            "size": size})
         net.post_file(created.pop("upload"), path)
     return created
 
@@ -611,7 +625,7 @@ def cmd_cron_add(args) -> None:
     info = discover(args)
     out = cron_add(api_mod.Api.from_config(), info, home=sessions.claude_home(), schedule=args.schedule,
                    prompt=prompt, timeout_min=args.timeout, permission_mode=args.permission_mode,
-                   file_history=args.file_history)
+                   file_history=args.file_history, size=args.size)
     _print(f"schedule {out['schedule_id']}: session {info.session_id} runs '{out['cron']}' (UTC); "
            f"next run {_utc(out['next_run_at'])}\nrun now: ctransfer cron run {out['schedule_id']}   "
            f"results: ctransfer cron logs {out['schedule_id']}")
@@ -686,7 +700,8 @@ def add_cron_parser(sub, session_args) -> None:
     p.add_argument("--schedule", required=True, help="5-field cron expression in UTC, at most hourly, e.g. '0 9 * * 1-5'")
     p.add_argument("--prompt", help="the task each run performs")
     p.add_argument("--prompt-file", help="read the task from this file")
-    p.add_argument("--timeout", type=int, help="minutes a run may take (default: the free tier's maximum)")
+    p.add_argument("--timeout", type=int, help="minutes a run may take (default: your plan's maximum)")
+    size_arg(p)
     p.add_argument("--permission-mode", default="default", choices=("default", "acceptEdits", "plan", "bypassPermissions"),
                    help="claude --permission-mode for runs (default: the session's own settings apply)")
     p.add_argument("--file-history", action="store_true", help="include /rewind checkpoints in the snapshot")
@@ -706,6 +721,10 @@ def add_cron_parser(sub, session_args) -> None:
     p = csub.add_parser("pull", help="bring a run's transcript back as a new local session")
     p.add_argument("run_id")
     p.set_defaults(fn=cmd_cron_pull)
+
+
+def size_arg(p) -> None:
+    p.add_argument("--size", help="VM size: nano (default), small (2 GB) or large (8 GB); bigger sizes need Pro")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -734,6 +753,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--when-idle", action="store_true", help="wait for the session's current turn to end, then push")
     p.add_argument("--detach", action="store_true", help="push from a background worker; log under ~/.config/ctransfer/logs")
     p.add_argument("--track", action="store_true", help=argparse.SUPPRESS)  # set on the detached worker
+    size_arg(p)
     p.add_argument("prompt", nargs="*", help="prompt the VM's claude runs as soon as it resumes (default: wait idle)")
     p.set_defaults(fn=cmd_push)
 
@@ -744,6 +764,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--remote-control", action="store_true", help="start claude with --remote-control on the VM")
     p.add_argument("--no-wait", action="store_true", help="return once the VM is launching")
     p.add_argument("--detach", action="store_true", help="start from a background worker; log under ~/.config/ctransfer/logs")
+    size_arg(p)
     p.set_defaults(fn=cmd_new)
 
     sub.add_parser("ls", help="list your cloud sessions").set_defaults(fn=cmd_ls)
@@ -775,7 +796,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_cron_parser(sub, session_args)
 
-    sub.add_parser("usage", help="your free-tier usage this month, and whether you can launch now").set_defaults(fn=cmd_usage)
+    sub.add_parser("usage", help="your plan, credit and usage this month, and whether you can launch now").set_defaults(fn=cmd_usage)
     sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
 
     account = sub.add_parser("account", help="delete your ctransfer account and everything stored for it")

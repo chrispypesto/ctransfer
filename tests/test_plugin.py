@@ -43,7 +43,7 @@ def test_dispatcher_status_reports_this_sessions_push(cli_env):
 
 
 def test_dispatcher_passes_other_commands_to_cli(cli_env):
-    for args in (["status", "abc"], ["ls"], ["pull", "abc", "--force"], ["rm", "abc"]):
+    for args in (["status", "abc"], ["ls"], ["usage"], ["pull", "abc", "--force"], ["rm", "abc"]):
         out = run(["bash", str(DISPATCH), *args], cli_env)
         assert out.returncode == 1 and "not signed in" in out.stdout, (args, out.stdout)
     out = run(["bash", str(DISPATCH), "pull"], cli_env)
@@ -104,7 +104,7 @@ def test_guard_reports_a_failed_push_once():
     assert guard("s1") is None
 
 
-@pytest.mark.parametrize("args", [[], ["--remote-control"]])
+@pytest.mark.parametrize("args", [[], ["--remote-control"], ["--size=large"]])
 def test_slash_command_push_end_to_end(cli_env, args):
     """Dispatcher -> CLI --detach -> background worker -> marker the guard reads. The session has no
     transcript, so the worker fails after its wait, which the guard then reports."""
@@ -118,7 +118,8 @@ def test_slash_command_push_end_to_end(cli_env, args):
     marker = cli.read_marker("s1")
     assert marker["state"] == "failed" and "no transcript for session s1" in marker["error"]
     log = Path(marker["log"]).read_text()
-    assert "push --session s1 --track" in log and "--when-idle" in log and ("--remote-control" in log) == bool(args)
+    assert "push --session s1 --track" in log and "--when-idle" in log
+    assert ("--remote-control" in log) == ("--remote-control" in args) and ("--size large" in log) == ("--size=large" in args)
     assert "push of this session failed" in guard("s1")["reason"]
     assert guard("s1") is None  # reported once
 

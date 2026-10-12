@@ -14,6 +14,7 @@ CONFIG_PATH = Path(os.environ.get("CTRANSFER_CONFIG") or Path.home() / ".config"
 DEFAULT_API_URL = "https://api.ctransfer.itschrispy.com"
 TERMS_URL = "https://ctransfer.itschrispy.com/terms"
 PRIVACY_URL = "https://ctransfer.itschrispy.com/privacy"
+ACCOUNT_URL = "https://ctransfer.itschrispy.com/account"  # plans and payments: the website is the only place to pay
 
 
 def load_config() -> dict:
