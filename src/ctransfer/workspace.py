@@ -164,17 +164,21 @@ def changes_digest(root) -> str | None:
     leaving out untracked credential files (they never travel, and pull leaves them alone).
 
     Pull compares it with the one recorded at push to tell the changes that were pushed (which the cloud copy
-    already has) from edits made afterwards. None when a tracked credential file is modified: that change never
-    left this machine, so it must never be taken for pushed work.
+    already has) from edits made afterwards. None when the repo holds work that never left this machine, so it
+    must never be taken for pushed work: a modified tracked credential file, or an untracked nested git repo
+    (listed as a directory, and carried only as an empty one).
     """
     root = Path(root)
     changed = _split_z(git(root, "diff", "--name-only", "-z", "HEAD"))
     if any(is_secret_name(c) for c in changed):
         return None
+    untracked = _untracked(root)
+    if any(u.endswith("/") or (root / u).is_dir() and not (root / u).is_symlink() for u in untracked):
+        return None
     h = hashlib.sha256()
     h.update(git_bytes(root, "rev-parse", "HEAD"))
     h.update(git_bytes(root, "diff", "--binary", "HEAD"))
-    for u in sorted(_untracked(root)):
+    for u in sorted(untracked):
         h.update(b"\0untracked\0" + u.encode() + b"\0")
         path = root / u
         h.update(hashlib.sha256(os.readlink(path).encode() if path.is_symlink() else path.read_bytes()).digest())

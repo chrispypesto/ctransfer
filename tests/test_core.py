@@ -119,6 +119,19 @@ def test_pushed_uncommitted_changes_give_way_to_the_cloud_copy(tmp_path):
     assert run_git(local, "stash", "list") == ""
 
 
+def test_untracked_nested_repo_is_never_taken_for_pushed_work(tmp_path):
+    local = make_repo(tmp_path / "local")
+    make_repo(local / "vendor" / "lib")  # a clone inside the workspace, untracked: git lists it as "vendor/lib/"
+    pushed = workspace.capture(local, tmp_path / "ws1")
+    remote = tmp_path / "remote"
+    workspace.restore_fresh(pushed, tmp_path / "ws1", remote)
+    back = workspace.capture(remote, tmp_path / "ws2")
+
+    assert pushed["changes"] is None
+    assert workspace.check_existing(back, tmp_path / "ws2", local, pushed_changes=pushed["changes"]) != []
+    assert (local / "vendor" / "lib" / "app.py").exists()
+
+
 def test_tree_capture_for_non_git_dir(tmp_path):
     d = tmp_path / "plain"
     (d / "node_modules").mkdir(parents=True)
