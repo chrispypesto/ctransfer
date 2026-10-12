@@ -1,0 +1,77 @@
+name: claude
+
+# Mention @claude in a PR comment, review, or inline review comment to have Claude answer or review the PR.
+# It can read the repo, run `make test` and read-only git commands, and reply on the PR; it can't push.
+# PRs from forks are skipped: `make test` runs the PR's code in a job that holds secrets.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  gate:
+    if: >-
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      same_repo: ${{ steps.pr.outputs.same_repo }}
+    steps:
+      - id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.repo.full_name)
+          if [ "$head" = "$GITHUB_REPOSITORY" ]; then
+            echo "same_repo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "same_repo=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR #$PR comes from fork $head; skipping Claude"
+          fi
+
+  claude:
+    needs: gate
+    if: needs.gate.outputs.same_repo == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    defaults:
+      run:
+        shell: bash -el {0}  # login shell so the conda env is active
+    steps:
+      # Keeps the checkout's credentials: the action fetches the PR branch with them.
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: environment.yml
+          activate-environment: ctransfer
+
+      # Claude's shell isn't a login shell, so put the env's python on PATH for `make test`.
+      - name: Expose conda env to later steps
+        run: echo "$CONDA_PREFIX/bin" >> "$GITHUB_PATH"
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          settings: |
+            {"permissions": {"allow": [
+              "Bash(make test)",
+              "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git blame:*)", "Bash(git status)"
+            ]}}
+          claude_args: |
+            --model claude-opus-5-5
+            --append-system-prompt "When asked to review: run make test; read the full PR diff against its base and the code around each change, plus earlier review comments and replies on the PR. Report only real problems (bugs, regressions, security issues, missing or wrong tests) as file:line with a concrete failure scenario, most severe first; skip style nits. End every review with one final line: either 'Findings: N' or, only when nothing needs changing, exactly 'All good: ready for a human to merge.' You cannot push commits; describe fixes instead."
