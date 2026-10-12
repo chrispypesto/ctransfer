@@ -62,15 +62,53 @@ def _fork_records(data: bytes, old: str, new: str) -> bytes:
     return ("\n".join(out) + "\n").encode()
 
 
+TRANSCRIPT_DIVERGED = (
+    "the local transcript has records the cloud copy lacks (you kept working locally after pushing). "
+    "Pass --force to overwrite them (a backup is kept) or --as-fork to pull into a new session id.")
+
+
+def check_not_open(session_id: str, home: Path) -> None:
+    live = sessions.find_live(session_id, home)
+    if live:
+        raise ApplyError(f"session {session_id} is open locally (pid {live['pid']}); exit it before pulling")
+
+
+def check_before_export(pushed: dict, *, home: Path | None = None, force: bool = False, as_fork: bool = False,
+                        stash: bool = False) -> None:
+    """Run apply_export's checks against what was pushed (see cli.write_push_record), before the cloud copy
+    exists. Asking for the export shuts the VM down, so a pull that would be refused must stop here, with nothing
+    changed anywhere. The cloud copy only adds to what was pushed, so whatever passes here passes there too, as
+    long as the local copy doesn't change in between."""
+    home = Path(home or sessions.claude_home())
+    sid = pushed["session_id"]
+    check_not_open(sid, home)
+    local_transcript = home / "projects" / pushed["project_dir"] / f"{sid}.jsonl"
+    if local_transcript.exists() and not as_fork and not force:
+        local_ids = sessions.record_uuids(local_transcript)
+        count = pushed["record_count"]
+        if len(local_ids) > count or (local_ids and len(local_ids) == count and local_ids[-1] != pushed["last_uuid"]):
+            raise ApplyError(TRANSCRIPT_DIVERGED)
+    ws = pushed["workspace"]
+    if ws["kind"] == "git":
+        problems = workspace.check_local(ws["root"], branch=ws.get("branch"), target=ws["head"], stash=stash,
+                                         force=force, pushed_changes=ws.get("changes"))
+        if problems:
+            raise ApplyError("; ".join(problems))
+
+
 def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force: bool = False,
-                 as_fork: bool = False, stash: bool = False, workspace_too: bool = True) -> dict:
+                 as_fork: bool = False, stash: bool = False, workspace_too: bool = True,
+                 pushed_changes: str | None = None) -> dict:
     """Overwrite the local transcript, file-history, memory and workspace (unless not workspace_too) with the
     cloud copy.
 
     Every check runs before anything is written; the previous local state is backed up under
     ~/.claude/ctransfer-backups/<session>/<timestamp>/ and the old git HEAD under refs/ctransfer/backup/.
-    Returns {"session_id", "backup", "transcript"}; transcript is None when the cloud session never recorded
-    one (a `ctransfer new` session nobody prompted), in which case only the workspace comes back.
+    pushed_changes is the fingerprint of the uncommitted work that was pushed (workspace.changes_digest): local
+    changes matching it are replaced, not refused or stashed.
+    Returns {"session_id", "backup", "transcript", "stash"}; transcript is None when the cloud session never
+    recorded one (a `ctransfer new` session nobody prompted), in which case only the workspace comes back. stash
+    is {"root", "message"} of the git stash holding local changes set aside with stash, else None.
     """
     bundle_dir = Path(bundle_dir)
     home = Path(home or sessions.claude_home())
@@ -79,30 +117,31 @@ def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force:
     remote_transcript = src_proj / f"{sid}.jsonl"
     local_transcript = home / "projects" / project_dir / f"{sid}.jsonl"
 
-    live = sessions.find_live(sid, home)
-    if live:
-        raise ApplyError(f"session {sid} is open locally (pid {live['pid']}); exit it before pulling")
+    check_not_open(sid, home)
     has_transcript = remote_transcript.is_file()
     if has_transcript and local_transcript.exists() and not as_fork:
         local_ids, remote_ids = sessions.record_uuids(local_transcript), sessions.record_uuids(remote_transcript)
         if not is_prefix(local_ids, remote_ids) and not force:
-            raise ApplyError(
-                "the local transcript has records the cloud copy lacks (you kept working locally after pushing). "
-                "Pass --force to overwrite them (a backup is kept) or --as-fork to pull into a new session id.")
+            raise ApplyError(TRANSCRIPT_DIVERGED)
 
     ws = manifest["workspace"]
     if workspace_too:
-        problems = workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force,
-                                            dry_run=True)
+        problems = workspace.check_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force,
+                                            pushed_changes=pushed_changes)
         if problems:
             raise ApplyError("; ".join(problems))
 
     backup = _backup(home, sid, project_dir)
+    stash_info = None
     if workspace_too:
-        workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force)
+        message = workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force,
+                                           pushed_changes=pushed_changes)
+        if message:
+            stash_info = {"root": ws["root"], "message": message}
 
+    result = {"session_id": sid, "backup": str(backup) if backup else None, "transcript": None, "stash": stash_info}
     if not has_transcript:
-        return {"session_id": sid, "backup": str(backup) if backup else None, "transcript": None}
+        return result
     target_sid = str(uuid.uuid4()) if as_fork else sid
     data = remote_transcript.read_bytes()
     if as_fork:
@@ -115,4 +154,4 @@ def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force:
     _merge_tree(src_proj / sid, dst_proj / target_sid)
     _merge_tree(src_proj / "memory", dst_proj / "memory")
     _merge_tree(bundle_dir / "claude" / "file-history" / sid, home / "file-history" / target_sid)
-    return {"session_id": target_sid, "backup": str(backup) if backup else None, "transcript": str(dst_proj / f"{target_sid}.jsonl")}
+    return {**result, "session_id": target_sid, "transcript": str(dst_proj / f"{target_sid}.jsonl")}

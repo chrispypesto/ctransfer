@@ -65,8 +65,8 @@ def test_apply_existing_fast_forwards_and_applies_dirty(tmp_path):
     (remote / "new.txt").write_text("new\n")
     back = workspace.capture(remote, tmp_path / "ws2")
 
-    assert workspace.apply_existing(back, tmp_path / "ws2", local, dry_run=True) == []
-    assert workspace.apply_existing(back, tmp_path / "ws2", local) == []
+    assert workspace.check_existing(back, tmp_path / "ws2", local) == []
+    assert workspace.apply_existing(back, tmp_path / "ws2", local) is None
     assert run_git(local, "rev-parse", "HEAD") == back["head"]
     assert (local / "app.py").read_text() == "print('remote dirty')\n"
     assert (local / "new.txt").read_text() == "new\n"
@@ -83,14 +83,53 @@ def test_apply_existing_detects_dirty_and_divergence(tmp_path):
     run_git(local, "commit", "-q", "--allow-empty", "-m", "local diverges")
     (local / "app.py").write_text("dirty\n")
 
-    problems = workspace.apply_existing(back, tmp_path / "ws2", local)
+    problems = workspace.check_existing(back, tmp_path / "ws2", local)
     assert any("uncommitted" in p for p in problems)
     assert any("--force" in p for p in problems)
+    with pytest.raises(workspace.WorkspaceError, match="--stash"):
+        workspace.apply_existing(back, tmp_path / "ws2", local)
     assert (local / "app.py").read_text() == "dirty\n"
 
-    assert workspace.apply_existing(back, tmp_path / "ws2", local, stash=True, force=True) == []
+    stash = workspace.apply_existing(back, tmp_path / "ws2", local, stash=True, force=True)
     assert run_git(local, "rev-parse", "HEAD") == back["head"]
-    assert "ctransfer pull" in run_git(local, "stash", "list")
+    assert stash in run_git(local, "stash", "list")
+
+
+def test_pushed_uncommitted_changes_give_way_to_the_cloud_copy(tmp_path):
+    local = make_repo(tmp_path / "local")
+    (local / "app.py").write_text("pushed edit\n")
+    (local / "scratch.txt").write_text("pushed, then deleted in the cloud\n")
+    pushed = workspace.capture(local, tmp_path / "ws1")
+    remote = tmp_path / "remote"
+    workspace.restore_fresh(pushed, tmp_path / "ws1", remote)
+    (remote / "app.py").write_text("cloud edit\n")
+    (remote / "scratch.txt").unlink()
+    back = workspace.capture(remote, tmp_path / "ws2")
+
+    # Without the push's fingerprint the pushed edits look like local work; with it they are the cloud copy's past.
+    assert workspace.check_existing(back, tmp_path / "ws2", local) != []
+    assert workspace.check_existing(back, tmp_path / "ws2", local, pushed_changes=pushed["changes"]) == []
+    (local / "app.py").write_text("edited again after the push\n")
+    assert workspace.check_existing(back, tmp_path / "ws2", local, pushed_changes=pushed["changes"]) != []
+    (local / "app.py").write_text("pushed edit\n")
+
+    assert workspace.apply_existing(back, tmp_path / "ws2", local, pushed_changes=pushed["changes"]) is None
+    assert (local / "app.py").read_text() == "cloud edit\n"
+    assert not (local / "scratch.txt").exists()
+    assert run_git(local, "stash", "list") == ""
+
+
+def test_untracked_nested_repo_is_never_taken_for_pushed_work(tmp_path):
+    local = make_repo(tmp_path / "local")
+    make_repo(local / "vendor" / "lib")  # a clone inside the workspace, untracked: git lists it as "vendor/lib/"
+    pushed = workspace.capture(local, tmp_path / "ws1")
+    remote = tmp_path / "remote"
+    workspace.restore_fresh(pushed, tmp_path / "ws1", remote)
+    back = workspace.capture(remote, tmp_path / "ws2")
+
+    assert pushed["changes"] is None
+    assert workspace.check_existing(back, tmp_path / "ws2", local, pushed_changes=pushed["changes"]) != []
+    assert (local / "vendor" / "lib" / "app.py").exists()
 
 
 def test_tree_capture_for_non_git_dir(tmp_path):
@@ -128,9 +167,9 @@ def test_untracked_secrets_are_neither_dirty_nor_stashed(tmp_path):
     local = make_repo(tmp_path / "local")
     meta = workspace.capture(local, tmp_path / "ws")
     (local / ".env").write_text("SECRET=1\n")
-    assert workspace.apply_existing(meta, tmp_path / "ws", local, dry_run=True) == []
+    assert workspace.check_existing(meta, tmp_path / "ws", local) == []
     (local / "scratch.txt").write_text("wip\n")
-    assert workspace.apply_existing(meta, tmp_path / "ws", local, stash=True) == []
+    assert workspace.apply_existing(meta, tmp_path / "ws", local, stash=True)
     assert not (local / "scratch.txt").exists()
     assert (local / ".env").read_text() == "SECRET=1\n"
 

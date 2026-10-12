@@ -118,6 +118,30 @@ def keys_dir() -> Path:
     return api_mod.CONFIG_PATH.parent / "keys"
 
 
+def push_records_dir() -> Path:
+    """What each transfer sent from this machine, so pull can check the local copy before touching the VM."""
+    return api_mod.CONFIG_PATH.parent / "transfers"
+
+
+def write_push_record(tid: str, manifest: dict) -> None:
+    push_records_dir().mkdir(parents=True, exist_ok=True)
+    record = {key: manifest[key] for key in ("session_id", "project_dir", "record_count", "last_uuid", "workspace")}
+    (push_records_dir() / f"{tid}.json").write_text(json.dumps(record, indent=2))
+
+
+def read_push_record(tid: str) -> dict | None:
+    try:
+        return json.loads((push_records_dir() / f"{tid}.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def forget_transfer(tid: str) -> None:
+    """Drop the push progress and push record of a transfer that is gone."""
+    clear_markers(tid)
+    (push_records_dir() / f"{tid}.json").unlink(missing_ok=True)
+
+
 def report_bundle(path: Path, manifest: dict) -> None:
     """What a bundle carries and what it left behind."""
     for s in manifest["skipped"]:
@@ -201,6 +225,7 @@ def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, size: 
         shutil.move(key, keys / tid)
         shutil.move(key.with_suffix(".pub"), keys / f"{tid}.pub")
         net.post_file(created["upload"], path)
+    write_push_record(tid, manifest)
     api.call("POST", f"/sessions/{tid}/launch")
     _print(f"launched transfer {tid}")
     if on_launch:
@@ -210,8 +235,19 @@ def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, size: 
 
 def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = False, stash: bool = False,
          sleep=time.sleep) -> dict:
+    """Bring a transfer's cloud copy back over the local session and workspace, then delete the transfer.
+
+    Exporting shuts the VM down, so every check that can run without the cloud copy runs first, against what
+    was pushed from here (or, for a transfer pushed elsewhere, at least the open-session check): a refused pull
+    leaves the VM running.
+    """
     item = api.call("GET", f"/sessions/{tid}")
+    pushed = read_push_record(tid)
     if item["state"] != "exported":
+        if pushed:
+            apply.check_before_export(pushed, home=home, force=force, as_fork=as_fork, stash=stash)
+        else:
+            apply.check_not_open(item["session_id"], home)
         if item["state"] in ("running", "export_requested"):
             api.call("POST", f"/sessions/{tid}/export")
             _print("export requested; the VM finishes its current turn first")
@@ -220,7 +256,8 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
         path = Path(tmp) / "export.tgz"
         net.get_file(item["download_url"], path)
         manifest = bundle.extract(path, Path(tmp) / "x")
-        result = apply.apply_export(Path(tmp) / "x", manifest, home=home, force=force, as_fork=as_fork, stash=stash)
+        result = apply.apply_export(Path(tmp) / "x", manifest, home=home, force=force, as_fork=as_fork, stash=stash,
+                                    pushed_changes=pushed["workspace"].get("changes") if pushed else None)
     api.call("DELETE", f"/sessions/{tid}")  # the server already tore the VM down at export; this is idempotent
     return result
 
@@ -228,13 +265,18 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
 def cmd_pull(args) -> None:
     result = pull(api_mod.Api.from_config(), args.transfer_id, home=sessions.claude_home(), force=args.force,
                   as_fork=args.as_fork, stash=args.stash)
-    clear_markers(args.transfer_id)
+    forget_transfer(args.transfer_id)
     _report_pull(result)
 
 
 def _report_pull(result: dict) -> None:
     if result["backup"]:
         _print(f"previous local state backed up to {result['backup']}")
+    if result.get("stash"):
+        root, message = result["stash"]["root"], result["stash"]["message"]
+        _print(f"your uncommitted changes in {root} were set aside as the git stash \"{message}\". To get them "
+               f"back: cd {shlex.quote(root)} && git stash pop (where the cloud copy changed the same lines, git "
+               "marks the conflicts for you to resolve)")
     if result["transcript"] is None:
         _print("pulled the workspace; the cloud session was never prompted, so there is no conversation to resume")
     else:
@@ -287,7 +329,7 @@ def cmd_account_delete(args) -> None:
         if input("Type 'delete' to confirm: ").strip() != "delete":
             raise SystemExit("not deleted")
     out = api.call("DELETE", "/me")
-    for local in (keys_dir(), marker_dir()):  # ssh keys and push progress of sessions that no longer exist
+    for local in (keys_dir(), marker_dir(), push_records_dir()):  # what was kept about sessions now gone
         shutil.rmtree(local, ignore_errors=True)
     cfg = api_mod.load_config()
     cfg.pop("token", None)
@@ -590,7 +632,7 @@ def cmd_usage(args) -> None:
 
 def cmd_rm(args) -> None:
     out = api_mod.Api.from_config().call("DELETE", f"/sessions/{args.transfer_id}")
-    clear_markers(args.transfer_id)
+    forget_transfer(args.transfer_id)
     if out["state"] == "exported":
         print(f"deleted the VM of {args.transfer_id}; its exported session can still be pulled: "
               f"ctransfer pull {args.transfer_id}")
@@ -783,7 +825,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("transfer_id")
     p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged")
     p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
-    p.add_argument("--stash", action="store_true", help="stash local uncommitted changes instead of refusing")
+    p.add_argument("--stash", action="store_true", help="set aside local changes made since the push as a git stash instead of refusing")
     p.set_defaults(fn=cmd_pull)
 
     p = sub.add_parser("resume", help="continue a pulled session locally (claude --resume, told it is back)")

@@ -74,10 +74,12 @@ With a prompt, `push` starts the VM's `claude --resume` with it, so the session 
 
 `new` sends the workspace, your Claude config and the project's memory, but no transcript. The VM starts `claude --session-id <id>`, with the prompt if you gave one, and an appended system prompt saying how the session was started. `pull` brings it back like any pushed session. If nobody ever prompted it, `pull` brings back only the workspace.
 
-`pull` refuses to run, and changes nothing, when:
+Uncommitted changes that were pushed are part of the cloud copy, so `pull` replaces them with what the VM made of them. It refuses to run, and changes nothing locally or in the cloud (the VM keeps running), when:
 - the session is open locally;
 - the local transcript has records the cloud copy lacks (`--force` overwrites them, `--as-fork` pulls into a new session id instead);
-- the local workspace has uncommitted changes (`--stash` stashes them) or its branch diverged (`--force`).
+- the local workspace has changes made after the push (`--stash` sets them aside as a git stash; pull then says how to get them back) or its branch has commits the cloud copy lacks (`--force`).
+
+These checks run against what was pushed from this machine. For a session pushed from another machine, `pull` checks only that the session isn't open locally before stopping the VM, and anything else that is wrong shows up after the VM has stopped; the cloud copy is still there to `pull` again.
 
 Untracked credential-looking files (`.env`, `*.pem`, `id_rsa*`, `*.tfvars`, …) are never uploaded. Pull leaves them alone.
 
