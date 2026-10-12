@@ -47,26 +47,36 @@ class Api:
         return net.request_json(self.url + path, method=method, body=body, headers=headers)
 
 
-GITHUB_DEVICE_URL = "https://github.com/login/device/code"
-GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
-
-
-def login(api: Api, *, post_form=net.post_form, notify=print, sleep=time.sleep) -> dict:
-    """GitHub OAuth device flow, then trade the GitHub token for a ctransfer token. Returns the /auth/github reply."""
-    client_id = api.call("GET", "/auth/config")["github_client_id"]
-    code = post_form(GITHUB_DEVICE_URL, {"client_id": client_id, "scope": ""})
+def login(api: Api, *, notify=print, sleep=time.sleep) -> dict:
+    """GitHub OAuth device flow, run by the control plane: it asks GitHub for a code, the user enters it at GitHub,
+    and polling then returns a ctransfer token. The GitHub token itself never reaches this machine, and the control
+    plane only accepts GitHub tokens it obtained itself. Returns {token, user_id, login}."""
+    try:
+        code = api.call("POST", "/auth/github/device", {})
+    except net.HttpError as e:
+        raise SystemExit(f"couldn't start signing in: {_reason(e)}") from None
     notify(f"open {code['verification_uri']} and enter code {code['user_code']}")
     interval = int(code.get("interval", 5))
     deadline = time.time() + int(code.get("expires_in", 900))
     while time.time() < deadline:
         sleep(interval)
-        out = post_form(GITHUB_TOKEN_URL, {"client_id": client_id, "device_code": code["device_code"],
-                                           "grant_type": "urn:ietf:params:oauth:grant-type:device_code"})
-        if out.get("access_token"):
-            # The GitHub token only proves identity once; it is not stored.
-            return api.call("POST", "/auth/github", {"github_token": out["access_token"]})
-        if out.get("error") == "slow_down":
-            interval += 5
-        elif out.get("error") != "authorization_pending":
-            raise SystemExit(f"GitHub sign-in failed: {out.get('error_description') or out.get('error')}")
-    raise SystemExit("GitHub sign-in timed out")
+        try:
+            out = api.call("POST", "/auth/github/device/token", {"device_code": code["device_code"]})
+        except net.HttpError as e:
+            if e.status == 429 or e.status >= 500:
+                continue  # a passing hiccup; the code is still good, so keep polling until it expires
+            raise SystemExit(f"GitHub sign-in failed: {_reason(e)}") from None
+        except OSError:
+            continue  # the network dropped for a moment; same as above
+        if not out.get("pending"):
+            return out
+        interval = max(interval, int(out.get("interval") or 0))  # GitHub may ask us to slow down, never to speed up
+    raise SystemExit("GitHub sign-in timed out; run `ctransfer login` again")
+
+
+def _reason(e: net.HttpError) -> str:
+    """The error message from a control-plane reply, or a short stand-in for one that isn't ours (e.g. HTML)."""
+    try:
+        return str(json.loads(e.body)["error"])
+    except (ValueError, KeyError, TypeError):
+        return f"the server answered HTTP {e.status}"
