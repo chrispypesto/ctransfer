@@ -194,9 +194,11 @@ def test_scheduled_run_forks_the_session_headlessly_and_reports_its_result(lapto
     assert result == {"exit_code": 0, "session_id": fork, "is_error": False, "num_turns": 4, "total_cost_usd": 0.12,
                       "text": "build fixed", "permission_denials": 1}
     argv = json.loads((vm_home / ".ctransfer" / "run" / "result.json").read_text())["argv"]
-    assert argv[:5] == ["-p", run["prompt"], "--resume", info.session_id, "--fork-session"]
+    # The note (earlier runs' summaries) comes first in the run's message, then the task.
+    assert argv[:5] == ["-p", "unattended run 3\n\nThe task:\ncheck the build; it's broken?", "--resume",
+                        info.session_id, "--fork-session"]
     assert argv[5:9] == last_ran_with and argv[argv.index("--permission-mode") + 1] == "acceptEdits"
-    assert argv[argv.index("--append-system-prompt") + 1] == "unattended run 3"
+    assert "--append-system-prompt" not in argv
 
 
 def test_secrets_reach_claude_and_a_github_token_lets_git_and_gh_use_github(laptop, tmp_path, monkeypatch):

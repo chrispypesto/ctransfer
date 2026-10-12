@@ -283,6 +283,13 @@ def run_dir(home: Path) -> Path:
     return home / ".ctransfer" / "run"
 
 
+def run_prompt(run: dict) -> str:
+    """The run's message to claude: the control plane's note (what this run is, summaries of earlier runs), then the
+    task. The note goes in the message, not --append-system-prompt: on a resumed, forked session (claude 2.1.296)
+    the run's claude had the note in its argv yet reported no previous-run summaries in its system prompt."""
+    return f"{run['note']}\n\nThe task:\n{run['prompt']}"
+
+
 def _launch_run(state: dict, home: Path, run: dict) -> None:
     """One headless turn on a fork of the pushed session: --fork-session writes the turn to a new transcript, so
     the pushed one (every run's starting point) never grows. A coreutils timeout bounds the run."""
@@ -290,10 +297,9 @@ def _launch_run(state: dict, home: Path, run: dict) -> None:
     out.mkdir(parents=True, exist_ok=True)
     claude = " ".join([
         f"timeout --kill-after=30 {int(run['timeout_sec'])}", "\"$HOME/.local/bin/claude\"",
-        "-p", shlex.quote(run["prompt"]), "--resume", state["session_id"], "--fork-session",
+        "-p", shlex.quote(run_prompt(run)), "--resume", state["session_id"], "--fork-session",
         shlex.join(sessions.model_args(transcript_path(state))),
-        "--output-format", "json", "--permission-mode", shlex.quote(run.get("permission_mode") or "default"),
-        "--append-system-prompt", shlex.quote(run["note"])])
+        "--output-format", "json", "--permission-mode", shlex.quote(run.get("permission_mode") or "default")])
     launcher = _write_launcher(state, home,
                                f"{claude} > \"$HOME/.ctransfer/run/result.json\" 2> \"$HOME/.ctransfer/run/stderr.log\"\n"
                                "echo $? > \"$HOME/.ctransfer/run/exit_code\"")
