@@ -108,7 +108,8 @@ def wait_for(api, tid: str, states: set[str], timeout: int, poll: float = POLL_S
         if item["state"] in states:
             return item
         if item["state"] in ("failed", "terminated"):
-            raise SystemExit(f"transfer {tid} ended in state {item['state']} ({item.get('failure', '')})")
+            why = item.get("failure_reason") or (f"({item['failure']})" if item.get("failure") else "")
+            raise SystemExit(f"transfer {tid} ended in state {item['state']}. {why}".strip())
         if time.time() > deadline:
             raise SystemExit(f"timed out waiting for {tid} to reach {sorted(states)}")
         sleep(poll)
@@ -537,7 +538,9 @@ def cmd_status(args) -> None:
              f"  session  {item['session_id']}",
              f"  project  {item['cwd']}",
              f"  created  {_local_time(item.get('created_at'))}"]
-    if item.get("failure"):
+    if item.get("failure_reason"):  # the control plane explains the failure and says what to do next
+        lines.append(f"  {item['failure_reason']}")
+    elif item.get("failure"):
         lines.append(f"  failure  {item['failure']}")
     if item.get("export_reason") == "credit":
         lines.append(f"  brought home because your credit ran out (add credit: {api_mod.ACCOUNT_URL}); "
@@ -705,7 +708,8 @@ def cmd_cron_logs(args) -> None:
     for run in sched["runs"][: args.n][::-1]:  # newest last, next to the prompt
         result = run.get("result") or {}
         print(_run_line(run))
-        for line in filter(None, [run.get("error"), result.get("error"), result.get("workspace_update")]):
+        for line in filter(None, [run.get("error"), run.get("failure_reason"), result.get("error"),
+                                  result.get("workspace_update")]):
             print(f"  ({line})")
         if result.get("text"):
             print("  " + result["text"].replace("\n", "\n  "))
