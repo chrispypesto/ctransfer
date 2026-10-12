@@ -1,6 +1,6 @@
 # ctransfer Privacy Policy
 
-**Effective October 11, 2026.**
+**Effective October 12, 2026.**
 
 This Privacy Policy describes how itschrispy ("**we**," "**us**," or "**our**") collects, uses, shares and deletes personal information in connection with ctransfer: the hosted control plane at `api.ctransfer.itschrispy.com`, the cloud virtual machines it starts for you ("**VMs**"), the website at `ctransfer.itschrispy.com`, and the `ctransfer` client and Claude Code plugin when used with them (together, the "**Service**"). Capitalized terms not defined here have the meaning given in our [Terms of Use](https://ctransfer.itschrispy.com/terms).
 
@@ -54,11 +54,13 @@ We do not look at Your Content except when you ask us to (for example, to help w
 | Claude token and secrets | until you remove them (`ctransfer token rm`, `ctransfer secret rm`) |
 | Your account, session records, schedules and run results | while your account exists |
 | Your plan, Stripe customer and subscription IDs, and credit balance | while your account exists |
+| A suspension of your account (your GitHub user ID, when, why and by which administrator) | until we lift it, even if you delete your account |
+| That your sign-ins were ended, by deleting your account or by us (your GitHub user ID and the time) | 30 days, until every sign-in from before then has expired |
 | Operational logs | 14 days |
 | VM infrastructure state (includes your GitHub user ID and session IDs) | up to 30 days after the VM is deleted |
 | Emails | as long as needed to handle your request, and as required by law |
 
-**Deleting your account.** `ctransfer account delete` immediately stops your VMs, cancels your Pro subscription, and deletes your bundles, schedules and their snapshots, Claude token, secrets, account record, billing record, session details and run results. It also asks Stripe to delete your Stripe customer; Stripe keeps the records of past payments it must keep as merchant of record. To keep the free tier's limits fair, we keep a record of the VM time each of your sessions used (your GitHub user ID, timestamps, VM hours and bundle sizes, without session details) for 35 days, then delete it. Operational logs and VM infrastructure state expire on the schedule above. You can also ask us to delete your account by emailing chris@itschrispy.com.
+**Deleting your account.** `ctransfer account delete` immediately stops your VMs, cancels your Pro subscription, and deletes your bundles, schedules and their snapshots, Claude token, secrets, account record, billing record, session details and run results. It also asks Stripe to delete your Stripe customer; Stripe keeps the records of past payments it must keep as merchant of record. To keep the free tier's limits fair, we keep a record of the VM time each of your sessions used (your GitHub user ID, timestamps, VM hours and bundle sizes, without session details) for 35 days, then delete it. We keep your GitHub user ID and the time of the deletion for 30 days, so that sign-ins from before the deletion stop working even if you sign up again. If we suspended your account, we keep the suspension until we lift it: deleting your account and signing up again does not end it. Operational logs and VM infrastructure state expire on the schedule above. You can also ask us to delete your account by emailing chris@itschrispy.com.
 
 ## Your choices
 
@@ -126,7 +128,7 @@ This section applies only to individuals in Europe. "Personal information" here 
 | Purpose | Legal basis |
 |---|---|
 | Providing the Service (sign-in, moving sessions, running VMs and schedules, storing credentials, billing for the Pro plan) | performance of our contract with you (the Terms) |
-| Enforcing limits, preventing abuse, security, keeping VM usage records for 35 days after account deletion | our legitimate interests in operating a fair, secure free service |
+| Enforcing limits, preventing abuse, security, keeping VM usage records for 35 days and records of suspensions and ended sign-ins after account deletion | our legitimate interests in operating a fair, secure free service |
 | Answering your messages | our legitimate interests, or performance of our contract with you |
 | Complying with law and protecting rights | compliance with legal obligations, and our legitimate interests |
 
