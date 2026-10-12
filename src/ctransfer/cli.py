@@ -559,6 +559,10 @@ def cmd_ssh(args) -> None:
     os.execvp("ssh", cmd)
 
 
+def _usd(amount: float) -> str:
+    return f"{'-' if amount < 0 else ''}${abs(amount):.2f}"
+
+
 def cmd_usage(args) -> None:
     """This user's plan, credit and standing against their own allowance, and whether a launch would go through."""
     u = api_mod.Api.from_config().call("GET", "/me/usage")
@@ -568,10 +572,16 @@ def cmd_usage(args) -> None:
     def of(key, unit=""):
         return f" of {limits[key]:g}{unit}" if key in limits else unit
 
+    credit = u.get("credit_usd") or 0
     if u.get("plan") == "pro":
-        lines = [f"plan: Pro, ${u.get('credit_usd', 0):.2f} credit left (add credit: {account_url})"]
+        lines = [f"plan: Pro, {_usd(credit)} credit left (add credit: {account_url})"]
     else:
         lines = [f"plan: Free (bigger VMs, more of them and pay-as-you-go hours with Pro: {account_url})"]
+        if credit > 0:  # credit added on Pro stays when it ends, and is spent again on Pro
+            lines.append(f"  {_usd(credit)} of credit kept on your account, usable again if you subscribe to Pro")
+        elif credit < 0:
+            lines.append(f"  your credit is {_usd(credit)} after a refunded or disputed payment; "
+                         "credit you add on Pro covers it first")
     lines += [f"this month ({u['month']}):",
              f"  VM-hours     {u['billed_hours'] + u['open_hours']}{of('monthly_vm_hours')} "
              f"({u['open_hours']} on VMs still running)",
