@@ -50,9 +50,8 @@ jobs:
       run:
         shell: bash -el {0}  # login shell so the conda env is active
     steps:
+      # Keeps the checkout's credentials: the action fetches the PR branch with them.
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
