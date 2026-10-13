@@ -153,6 +153,7 @@ def test_a_service_token_in_the_environment_signs_commands_in_without_saving_it(
 
     configure_signed_in()  # the env token wins over a saved sign-in...
     assert api_mod.Api.from_config().token == "cts_test"
+    assert api_mod.Api.from_config(signed_in=False).token is None  # signing in sends no token
     cli.main(["logout"])  # ...and is never written to the config
     assert "token" not in api_mod.load_config()
     assert "CTRANSFER_TOKEN is still set" in capsys.readouterr().err

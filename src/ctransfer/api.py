@@ -40,8 +40,10 @@ class Api:
 
     @classmethod
     def from_config(cls, *, signed_in: bool = True) -> "Api":
+        """The api, with the token to send: CTRANSFER_TOKEN, else the saved sign-in. signed_in=False (signing in)
+        sends none."""
         cfg = load_config()
-        token = os.environ.get(TOKEN_ENV) or cfg.get("token")
+        token = (os.environ.get(TOKEN_ENV) or cfg.get("token")) if signed_in else None
         if signed_in and not token:
             raise SystemExit(f"not signed in: run `ctransfer login` (or, in automation, set {TOKEN_ENV} to a service "
                              "token)")

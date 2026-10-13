@@ -311,6 +311,9 @@ def cmd_login(args) -> None:
     cfg["token"] = out["token"]
     api_mod.save_config(cfg)
     _print(f"signed in as {out['login']}")
+    if os.environ.get(api_mod.TOKEN_ENV):
+        _print(f"note: {api_mod.TOKEN_ENV} is set, so commands keep using that service token instead of this sign-in "
+               "until you unset it")
 
 
 def cmd_logout(args) -> None:
