@@ -245,6 +245,10 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
     leaves the VM running.
     """
     item = api.call("GET", f"/sessions/{tid}")
+    expires = item.get("export_expires_at")
+    if item["state"] == "exported" and expires and expires <= time.time():
+        raise SystemExit(f"nothing to pull: the cloud copy of {tid} was deleted {_local_time(expires)} "
+                         "(exported work is kept for a limited time)")
     pushed = read_push_record(tid)
     if item["state"] != "exported":
         if pushed:
