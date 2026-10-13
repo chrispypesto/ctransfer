@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -758,7 +759,7 @@ def add_cron_parser(sub, session_args) -> None:
     p.add_argument("--prompt-file", help="read the task from this file")
     p.add_argument("--timeout", type=int, help="minutes a run may take (default: your plan's maximum)")
     size_arg(p)
-    p.add_argument("--permission-mode", default="default", choices=("default", "acceptEdits", "plan", "bypassPermissions"),
+    p.add_argument("--permission-mode", default="default", choices=PERMISSION_MODES,
                    help="claude --permission-mode for runs (default: the session's own settings apply)")
     p.add_argument("--file-history", action="store_true", help="include /rewind checkpoints in the snapshot")
     p.set_defaults(fn=cmd_cron_add)
@@ -777,6 +778,157 @@ def add_cron_parser(sub, session_args) -> None:
     p = csub.add_parser("pull", help="bring a run's transcript back as a new local session")
     p.add_argument("run_id")
     p.set_defaults(fn=cmd_cron_pull)
+
+
+# ---- task: a headless run on a GitHub repo, continued with follow-ups ----------------------------
+
+PERMISSION_MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
+TASK_WAIT_POLL_SEC = 15
+TASK_ACTIVE = "running"  # a step's status while its VM is starting or claude is working
+
+
+def _task_prompt(args) -> str:
+    prompt = Path(args.prompt_file).read_text() if args.prompt_file else args.prompt
+    if not prompt or not prompt.strip():
+        raise SystemExit("give the prompt with --prompt or --prompt-file")
+    return prompt
+
+
+def _labels(values: list[str] | None) -> list[str]:
+    for label in values or []:
+        if "=" not in label or label.startswith("="):
+            raise SystemExit(f"labels look like key=value (e.g. issue=42), not {label!r}")
+    return values or []
+
+
+def _wait_task(api, task_id: str, *, sleep=time.sleep) -> dict:
+    """Polls until the task's latest step has ended."""
+    while True:
+        task = api.call("GET", f"/tasks/{task_id}")
+        if task["status"] != TASK_ACTIVE:
+            return task
+        sleep(TASK_WAIT_POLL_SEC)
+
+
+def _finish(api, task: dict, wait: bool) -> None:
+    """Prints the task id (stdout, for scripts) and, with wait, its result once its step ends; exits 1 unless the
+    step succeeded."""
+    print(task["task_id"])
+    if not wait:
+        _print(f"see its result: ctransfer task show {task['task_id']}  (or wait for it: add --wait next time)")
+        return
+    _print("waiting for the task's step to finish (Ctrl-C stops waiting; the task keeps running)...")
+    done = _wait_task(api, task["task_id"])
+    _print(_task_text(done))
+    if done["status"] != "succeeded":
+        raise SystemExit(1)
+
+
+def cmd_task_start(args) -> None:
+    api = api_mod.Api.from_config()
+    task = api.call("POST", "/tasks", {
+        "repo": args.repo, "ref": args.ref, "prompt": _task_prompt(args), "labels": _labels(args.label),
+        "size": args.size, "timeout_min": args.timeout, "permission_mode": args.permission_mode})
+    _print(f"started task {task['task_id']} on {task['repo']}" + (f" at {task['ref']}" if task.get("ref") else ""))
+    _finish(api, task, args.wait)
+
+
+def cmd_task_follow_up(args) -> None:
+    api = api_mod.Api.from_config()
+    task = api.call("POST", f"/tasks/{args.task_id}/follow-up",
+                    {"prompt": _task_prompt(args), "timeout_min": args.timeout})
+    _print(f"sent follow-up {len(task['steps'])} to task {task['task_id']}: same conversation, on a new VM")
+    _finish(api, task, args.wait)
+
+
+def _step_line(step: dict) -> str:
+    result = step.get("result") or {}
+    bits = [f"step {step['step']}", _utc(step.get("created_at")), step["status"]]
+    if result.get("duration_ms"):
+        bits.append(f"{result['duration_ms'] / 60000:.1f} min")
+    if result.get("total_cost_usd") is not None:
+        bits.append(f"${result['total_cost_usd']:.2f}")
+    if result.get("num_turns"):
+        bits.append(f"{result['num_turns']} turns")
+    if result.get("permission_denials"):
+        bits.append(f"{result['permission_denials']} permission denials")
+    return "  ".join(bits)
+
+
+def _task_text(task: dict) -> str:
+    where = task["repo"] + (f" at {task['ref']}" if task.get("ref") else "")
+    lines = [f"task {task['task_id']}  {where}  {task['status']}",
+             f"session {task['session_id']}  permission mode {task['permission_mode']}"]
+    if task.get("labels"):
+        lines.append("labels: " + ", ".join(task["labels"]))
+    if task.get("resets_at"):
+        lines.append(f"Claude's usage limit resets {_utc(task['resets_at'])}; then continue with: "
+                     f"ctransfer task follow-up {task['task_id']} --prompt 'continue'")
+    for step in task["steps"]:
+        result = step.get("result") or {}
+        lines += ["", _step_line(step), "  prompt: " + " ".join(step["prompt"].split())[:200]]
+        for line in filter(None, [step.get("error"), step.get("failure_reason"), result.get("error")]):
+            lines.append(f"  ({line})")
+        if result.get("text"):
+            lines.append("  " + result["text"].replace("\n", "\n  "))
+    return "\n".join(lines)
+
+
+def cmd_task_show(args) -> None:
+    print(_task_text(api_mod.Api.from_config().call("GET", f"/tasks/{args.task_id}")))
+
+
+def cmd_task_ls(args) -> None:
+    query = "&".join(f"label={urllib.parse.quote(label, safe='')}" for label in _labels(args.label))
+    tasks = api_mod.Api.from_config().call("GET", "/tasks" + (f"?{query}" if query else ""))["tasks"]
+    if not tasks:
+        print("no tasks" + (" with those labels" if query else ""))
+    for t in tasks:
+        where = t["repo"] + (f"@{t['ref']}" if t.get("ref") else "")
+        print(f"{t['task_id']}  {_utc(t.get('created_at'))}  {t['status']:<20} {where}  {' '.join(t.get('labels') or [])}")
+
+
+def cmd_task_rm(args) -> None:
+    out = api_mod.Api.from_config().call("DELETE", f"/tasks/{args.task_id}")
+    stopped = " and stopped its running step" if out.get("vms_stopped") else ""
+    print(f"deleted task {out['deleted']}{stopped}; its saved conversation and workspace are gone")
+
+
+def add_task_parser(sub) -> None:
+    task = sub.add_parser("task", help="run Claude headless on a GitHub repo, then continue the same conversation")
+    tsub = task.add_subparsers(dest="task_cmd", required=True)
+
+    def run_args(p):
+        p.add_argument("--prompt", help="what Claude should do")
+        p.add_argument("--prompt-file", help="read the prompt from this file")
+        p.add_argument("--timeout", type=int, help="minutes the step may take (default: your plan's maximum)")
+        p.add_argument("--wait", action="store_true",
+                       help="wait for the step to finish and print its result; exit 1 unless it succeeded")
+
+    p = tsub.add_parser("start", help="clone a GitHub repo on a new cloud VM and run Claude on a prompt there")
+    p.add_argument("repo", help="owner/name of the GitHub repo (a private one needs `ctransfer secret set GH_TOKEN`)")
+    p.add_argument("--ref", help="branch, tag or commit to check out (default: the repo's default branch)")
+    p.add_argument("--label", action="append", metavar="KEY=VALUE", help="tag the task, e.g. issue=42 (repeatable)")
+    p.add_argument("--permission-mode", default="default", choices=PERMISSION_MODES,
+                   help="claude --permission-mode (nobody is there to answer permission prompts)")
+    size_arg(p)
+    run_args(p)
+    p.set_defaults(fn=cmd_task_start)
+
+    p = tsub.add_parser("follow-up", help="continue a task's conversation with a new prompt, on a new VM")
+    p.add_argument("task_id")
+    run_args(p)
+    p.set_defaults(fn=cmd_task_follow_up)
+
+    p = tsub.add_parser("ls", help="list your tasks, newest first")
+    p.add_argument("--label", action="append", metavar="KEY=VALUE", help="only tasks with this label (repeatable)")
+    p.set_defaults(fn=cmd_task_ls)
+
+    for name, fn, help_ in (("show", cmd_task_show, "a task's status and each step's result"),
+                            ("rm", cmd_task_rm, "delete a task, stopping its VM if a step is running")):
+        p = tsub.add_parser(name, help=help_)
+        p.add_argument("task_id")
+        p.set_defaults(fn=fn)
 
 
 def size_arg(p) -> None:
@@ -851,6 +1003,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_rm)
 
     add_cron_parser(sub, session_args)
+    add_task_parser(sub)
 
     sub.add_parser("usage", help="your plan, credit and usage this month, and whether you can launch now").set_defaults(fn=cmd_usage)
     sub.add_parser("logout", help="forget the saved sign-in").set_defaults(fn=cmd_logout)
