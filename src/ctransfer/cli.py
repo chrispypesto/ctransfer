@@ -247,8 +247,10 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
     item = api.call("GET", f"/sessions/{tid}")
     expires = item.get("export_expires_at")
     if item["state"] == "exported" and expires and expires <= time.time():
-        raise SystemExit(f"nothing to pull: the cloud copy of {tid} was deleted {_local_time(expires)} "
-                         "(exported work is kept for a limited time)")
+        forget_transfer(tid)  # nothing will come back, so the local session is no longer held for it
+        raise SystemExit(f"nothing to pull: the cloud copy of {tid} was deleted {_local_time(expires)} (exported work "
+                         "is kept for a limited time). The local session is no longer marked as in the cloud: carry "
+                         "on with it here.")
     pushed = read_push_record(tid)
     if item["state"] != "exported":
         if pushed:
@@ -755,8 +757,12 @@ def cmd_usage(args) -> None:
 def cmd_rm(args) -> None:
     out = api_mod.Api.from_config().call("DELETE", f"/sessions/{args.transfer_id}")
     forget_transfer(args.transfer_id)
-    if out["state"] == "exported":
-        print(f"deleted the VM of {args.transfer_id}; its exported session can still be pulled: "
+    expires = out.get("export_expires_at")  # servers that don't report it: no date
+    if out["state"] == "exported" and expires and expires <= time.time():
+        print(f"removed {args.transfer_id}: its exported session was already deleted {_local_time(expires)}")
+    elif out["state"] == "exported":
+        until = f" until {_local_time(expires)}" if expires else ""
+        print(f"deleted the VM of {args.transfer_id}; its exported session can still be pulled{until}: "
               f"ctransfer pull {args.transfer_id}")
     else:
         print(f"deleted {args.transfer_id}: its VM and any work done on it are gone")
@@ -858,6 +864,10 @@ def cmd_cron_pull(args) -> None:
     item = api.call("GET", f"/sessions/{args.run_id}")
     if item["state"] != "exported" or not item.get("download_url"):
         raise SystemExit(f"run {args.run_id} has no transcript to pull (state {item['state']})")
+    expires = item.get("export_expires_at")
+    if expires and expires <= time.time():
+        raise SystemExit(f"run {args.run_id}'s transcript was deleted {_local_time(expires)} "
+                         "(exported work is kept for a limited time)")
     with tempfile.TemporaryDirectory(prefix="ctransfer-pull-") as tmp:
         path = Path(tmp) / "export.tgz"
         net.get_file(item["download_url"], path)
