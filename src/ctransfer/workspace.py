@@ -110,6 +110,7 @@ def _capture_git(root: Path, out: Path) -> dict:
 
 def _capture_tree(root: Path, out: Path) -> dict:
     skipped = []
+    files = {}
     with tarfile.open(out / "tree.tar", "w") as tf:
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in TREE_EXCLUDE_DIRS]
@@ -119,8 +120,93 @@ def _capture_tree(root: Path, out: Path) -> dict:
                 if is_secret_name(name):
                     skipped.append(rel)
                     continue
+                # Fingerprint before archiving: a file edited in between then only makes pull see a mismatch and
+                # refuse, never a match that would let pull overwrite an edit the archive doesn't have. Only files
+                # and symlinks, what pull compares: opening a FIFO would block, a socket can't be opened.
+                if full.is_symlink() or full.is_file():
+                    files[rel] = _fingerprint(full)
                 tf.add(full, arcname=rel, recursive=False)
-    return {"kind": "tree", "root": str(root), "skipped": sorted(skipped)}
+    return {"kind": "tree", "root": str(root), "skipped": sorted(skipped), "files": files}
+
+
+def _fingerprint(path: Path) -> str:
+    """sha256 of a file's bytes, or of its target for a symlink."""
+    if path.is_symlink():
+        return hashlib.sha256(os.readlink(path).encode()).hexdigest()
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _member_fingerprint(tf: tarfile.TarFile, member: tarfile.TarInfo) -> str:
+    """_fingerprint of a file as archived."""
+    if member.issym():
+        return hashlib.sha256(member.linkname.encode()).hexdigest()
+    h = hashlib.sha256()
+    f = tf.extractfile(member)
+    if f is not None:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _local_fingerprint(root: Path, rel: str) -> str | None:
+    """_fingerprint of root/rel, or None when there is no file (or symlink) there."""
+    path = root / rel
+    if not path.is_symlink() and not path.is_file():
+        return None
+    return _fingerprint(path)
+
+
+def tree_edits(root, pushed_files: dict) -> list[str]:
+    """Files of a pushed non-git folder that were changed here after the push (pushed_files is the push's
+    {path: fingerprint}). Pulling would overwrite them; deleted ones are left out, pulling only brings them back."""
+    root = Path(root)
+    edits = []
+    for rel, pushed in sorted(pushed_files.items()):
+        local = _local_fingerprint(root, rel)
+        if local is not None and local != pushed:
+            edits.append(rel)
+    return edits
+
+
+def tree_conflicts(src, root, pushed_files: dict | None) -> list[str]:
+    """Local files that extracting the captured non-git folder at src over root would overwrite and lose: the
+    archive has a different version, and the local one isn't the pushed version the cloud copy grew out of (or
+    nothing is known about what was pushed)."""
+    src, root = Path(src), Path(root)
+    tar_path = src / "tree.tar"
+    if not tar_path.exists():
+        return []
+    conflicts = []
+    with tarfile.open(tar_path) as tf:
+        for member in tf:
+            # A hard link (a second path to a file already archived) is written over a local file with its
+            # target's bytes, so it counts like a file.
+            if not (member.isfile() or member.islnk() or member.issym()):
+                continue
+            # The name extraction will use, from the same filter; a member it refuses (one that would land
+            # outside root) is never extracted, so it overwrites nothing here.
+            try:
+                name = tarfile.data_filter(member, str(root)).name
+            except tarfile.FilterError:
+                continue
+            local = _local_fingerprint(root, name)
+            if local is None or local == _member_fingerprint(tf, member):
+                continue
+            if pushed_files is not None and pushed_files.get(name) == local:
+                continue
+            conflicts.append(name)
+    return sorted(conflicts)
+
+
+def tree_problem(root, paths: list[str]) -> str:
+    """Why a pull over the non-git folder at root stops: the files that changed here since the push."""
+    shown = ", ".join(paths[:10]) + (f" and {len(paths) - 10} more" if len(paths) > 10 else "")
+    return (f"files in {root} changed here since the push, and pulling would overwrite them: {shown}. Nothing was "
+            "changed. Pass --force to pull anyway: those files are backed up first, and the pull says where")
 
 
 def _extract(tar_path: Path, dest: Path) -> None:
@@ -235,11 +321,13 @@ def check_local(root, *, branch: str | None, target: str, stash: bool = False, f
 
 
 def check_existing(meta: dict, src, root, *, stash: bool = False, force: bool = False,
-                   pushed_changes: str | None = None) -> list[str]:
+                   pushed_changes: str | None = None, pushed_files: dict | None = None) -> list[str]:
     """check_local against a captured workspace: why apply_existing would refuse; [] if it wouldn't. Only the
-    bundle's refs are fetched (into refs/ctransfer/remote/*); the working tree is not touched."""
+    bundle's refs are fetched (into refs/ctransfer/remote/*); the working tree is not touched. A non-git folder
+    is checked with tree_conflicts against pushed_files (the push's per-file fingerprints)."""
     if meta["kind"] == "tree":
-        return []
+        conflicts = [] if force else tree_conflicts(Path(src).resolve(), root, pushed_files)
+        return [tree_problem(root, conflicts)] if conflicts else []
     src, root = Path(src).resolve(), Path(root)
     if _toplevel(root) is None:
         return [f"{root} is not a git repository"]
@@ -277,15 +365,20 @@ def _fetch(root: Path, src: Path) -> None:
 
 
 def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = False,
-                   pushed_changes: str | None = None) -> str | None:
+                   pushed_changes: str | None = None, pushed_files: dict | None = None) -> str | None:
     """Bring an existing local workspace up to a captured one (the pull direction).
 
     Uncommitted changes that are exactly what was pushed (pushed_changes, see changes_digest) are replaced by the
     cloud copy, which grew out of them. Newer ones are stashed with stash, else (like a diverged branch without
     force) it raises WorkspaceError and changes nothing. Returns the stash's message when one was made.
+    A non-git folder is extracted over root; local files changed since the push (see tree_conflicts) make it raise
+    unless force (the caller backs them up first).
     """
     src, root = Path(src).resolve(), Path(root)
     if meta["kind"] == "tree":
+        conflicts = [] if force else tree_conflicts(src, root, pushed_files)
+        if conflicts:
+            raise WorkspaceError(tree_problem(root, conflicts))
         root.mkdir(parents=True, exist_ok=True)
         _extract(src / "tree.tar", root)
         return None

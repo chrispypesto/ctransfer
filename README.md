@@ -78,6 +78,7 @@ Uncommitted changes that were pushed are part of the cloud copy, so `pull` repla
 - the session is open locally;
 - the local transcript has records the cloud copy lacks (`--force` overwrites them, `--as-fork` pulls into a new session id instead);
 - the local workspace has changes made after the push (`--stash` sets them aside as a git stash; pull then says how to get them back) or its branch has commits the cloud copy lacks (`--force`).
+- the workspace is a folder that isn't a git repo, and files in it changed after the push (pull names them; `--force` copies them to a backup folder, says where, then pulls).
 
 These checks run against what was pushed from this machine. For a session pushed from another machine, `pull` checks only that the session isn't open locally before stopping the VM, and anything else that is wrong shows up after the VM has stopped; the cloud copy is still there to `pull` again.
 

@@ -1,5 +1,9 @@
+import io
 import json
+import os
+import socket
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -213,3 +217,141 @@ def test_export_of_a_never_prompted_session_pulls_only_the_workspace(tmp_path):
 def test_push_bundle_still_requires_a_transcript(tmp_path):
     with pytest.raises(bundle.BundleError, match="transcript not found"):
         bundle.build(tmp_path / "b.tgz", kind="push", home=tmp_path, session_id="s", project_dir="p", cwd=str(tmp_path))
+
+
+def _plain_folder_round(tmp_path, links=None):
+    """A non-git folder sent to a VM (as `ctransfer new` does) and restored there. Returns (folder, push manifest,
+    vm folder, export(): the VM's copy brought back as pull receives it)."""
+    folder = tmp_path / "laptop" / "notes"
+    folder.mkdir(parents=True)
+    (folder / "plan.txt").write_text("v1\n")
+    (folder / "todo.txt").write_text("todo v1\n")
+    (folder / ".env").write_text("SECRET=1\n")
+    for link, target in (links or {}).items():
+        os.link(folder / target, folder / link)
+    sid = "6f1d2c3b-0a9e-4b8c-8d7f-1e2a3b4c5d6e"
+    project_dir = sessions.encode_project_dir(str(folder))
+    home = tmp_path / "laptop" / ".claude"
+    home.mkdir()
+    pushed = bundle.build(tmp_path / "push.tgz", kind="new", home=home, session_id=sid, project_dir=project_dir,
+                          cwd=str(folder))
+    bundle.extract(tmp_path / "push.tgz", tmp_path / "pushed")
+    vm_folder = tmp_path / "vm" / "notes"
+    workspace.restore_fresh(pushed["workspace"], tmp_path / "pushed" / "workspace", vm_folder)
+
+    def export():
+        vm_home = tmp_path / "vm" / ".claude"
+        vm_home.mkdir(exist_ok=True)
+        bundle.build(tmp_path / "export.tgz", kind="export", home=vm_home, session_id=sid, project_dir=project_dir,
+                     cwd=str(folder), workspace_dir=str(vm_folder), record_root=str(folder))
+        return bundle.extract(tmp_path / "export.tgz", tmp_path / "x")
+
+    return folder, home, pushed, vm_folder, export
+
+
+def test_pull_into_a_plain_folder_replaces_only_files_unchanged_since_the_push(tmp_path):
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    (vm_folder / "plan.txt").write_text("v2 from the vm\n")
+    (vm_folder / "new.txt").write_text("made on the vm\n")
+    (folder / ".DS_Store").write_text("finder junk\n")  # appeared locally, the cloud copy has no such file
+
+    apply.check_before_export(pushed, home=home)
+    result = apply.apply_export(tmp_path / "x", export(), home=home, pushed_files=pushed["workspace"]["files"])
+
+    assert (folder / "plan.txt").read_text() == "v2 from the vm\n"
+    assert (folder / "new.txt").read_text() == "made on the vm\n"
+    assert (folder / ".DS_Store").read_text() == "finder junk\n"
+    assert (folder / ".env").read_text() == "SECRET=1\n"
+    assert result["overwritten"] == [] and result["backup"] is None
+
+
+def test_pull_into_a_plain_folder_refuses_a_new_local_file_the_cloud_copy_also_made(tmp_path):
+    """A file created on both sides after the push can't be caught before the export (nothing about it was
+    pushed); the cloud copy shows the clash, and pull refuses before writing anything."""
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    (vm_folder / "plan.txt").write_text("v2 from the vm\n")
+    (vm_folder / "draft.txt").write_text("vm draft\n")
+    (folder / "draft.txt").write_text("my draft\n")
+
+    apply.check_before_export(pushed, home=home)
+    manifest = export()
+    with pytest.raises(apply.ApplyError, match=r"changed here since the push.*: draft\.txt\. .*--force"):
+        apply.apply_export(tmp_path / "x", manifest, home=home, pushed_files=pushed["workspace"]["files"])
+    assert (folder / "draft.txt").read_text() == "my draft\n"
+    assert (folder / "plan.txt").read_text() == "v1\n"
+
+    result = apply.apply_export(tmp_path / "x", manifest, home=home, force=True,
+                                pushed_files=pushed["workspace"]["files"])
+    assert result["overwritten"] == ["draft.txt"]
+    assert (folder / "draft.txt").read_text() == "vm draft\n"
+    assert (folder / "plan.txt").read_text() == "v2 from the vm\n"
+    assert (Path(result["backup"]) / "workspace" / "draft.txt").read_text() == "my draft\n"
+
+
+def test_pull_into_a_plain_folder_pushed_from_elsewhere_refuses_any_local_difference(tmp_path):
+    """Without this machine's push fingerprints nothing local is known to be what the cloud copy grew out of."""
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    (vm_folder / "plan.txt").write_text("v2 from the vm\n")
+    with pytest.raises(apply.ApplyError, match=r"plan\.txt"):
+        apply.apply_export(tmp_path / "x", export(), home=home)
+    assert (folder / "plan.txt").read_text() == "v1\n"
+
+
+def test_pull_into_a_plain_folder_refuses_local_edits_before_the_export(tmp_path):
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    (folder / "plan.txt").write_text("edited here after the push\n")
+
+    with pytest.raises(apply.ApplyError, match=r": plan\.txt\. Nothing was changed\. .*--force"):
+        apply.check_before_export(pushed, home=home)
+    apply.check_before_export(pushed, home=home, force=True)
+
+    # The VM left plan.txt alone: the cloud copy is still the pushed version, and the local edit is still newer.
+    with pytest.raises(apply.ApplyError, match=r"plan\.txt"):
+        apply.apply_export(tmp_path / "x", export(), home=home, pushed_files=pushed["workspace"]["files"])
+    assert (folder / "plan.txt").read_text() == "edited here after the push\n"
+
+
+def test_push_of_a_plain_folder_with_a_fifo_and_a_socket(tmp_path):
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    (folder / "a.txt").write_text("a")
+    os.mkfifo(folder / "pipe")
+    sock = socket.socket(socket.AF_UNIX)
+    sock.bind(str(folder / "s.sock"))
+    try:
+        meta = workspace.capture(folder, tmp_path / "ws")
+    finally:
+        sock.close()
+    assert set(meta["files"]) == {"a.txt"}
+
+
+def test_pull_ignores_archive_entries_outside_the_folder(tmp_path):
+    """Only what extraction would write inside the folder is compared (and backed up with --force)."""
+    folder, outside, src = tmp_path / "notes", tmp_path / "outside.txt", tmp_path / "ws"
+    folder.mkdir()
+    src.mkdir()
+    outside.write_text("not part of the folder\n")
+    with tarfile.open(src / "tree.tar", "w") as tf:
+        info = tarfile.TarInfo("../outside.txt")
+        info.size = 5
+        tf.addfile(info, io.BytesIO(b"other"))
+    assert workspace.tree_conflicts(src, folder, {}) == []
+
+
+def test_pull_into_a_plain_folder_backs_up_an_edited_hard_link(tmp_path):
+    """Of two hard-linked files, the archive holds the second as a link to the first; an editor that saves by
+    rename breaks the link locally, and that file's edit must not be lost."""
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path, links={"b.txt": "plan.txt"})
+    manifest = export()
+    with tarfile.open(tmp_path / "x" / "workspace" / "tree.tar") as tf:
+        [link] = [m.name for m in tf if m.islnk()]
+    (folder / "edit.tmp").write_text("edited here\n")
+    os.replace(folder / "edit.tmp", folder / link)
+    with pytest.raises(apply.ApplyError, match=rf": {link}\."):
+        apply.apply_export(tmp_path / "x", manifest, home=home, pushed_files=pushed["workspace"]["files"])
+
+    result = apply.apply_export(tmp_path / "x", manifest, home=home, force=True,
+                                pushed_files=pushed["workspace"]["files"])
+    assert result["overwritten"] == [link]
+    assert (Path(result["backup"]) / "workspace" / link).read_text() == "edited here\n"
+    assert (folder / link).read_text() == "v1\n"
