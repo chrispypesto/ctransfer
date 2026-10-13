@@ -4,7 +4,7 @@
 
 This Privacy Policy describes how Christopher Pestano ("**we**," "**us**," or "**our**") collects, uses, shares and deletes personal information in connection with ctransfer: the hosted control plane at `api.ctransfer.itschrispy.com`, the cloud virtual machines it starts for you ("**VMs**"), the website at `ctransfer.itschrispy.com`, and the `ctransfer` client and Claude Code plugin when used with them (together, the "**Service**"). Capitalized terms not defined here have the meaning given in our [Terms of Use](https://ctransfer.itschrispy.com/terms).
 
-**Summary.** We collect what we need to move your Claude Code sessions to a VM and back: your GitHub identity, the sessions you send, and the credentials you choose to store. We do not sell your information, use it for advertising, or use it to train AI models. Bundles are deleted within 7 days, VMs are deleted when their session ends, and `ctransfer account delete` removes the rest, except the few records listed under [Retention](#retention). If you are a California resident, see [State privacy rights](#state-privacy-rights). If you are in the European Economic Area or the United Kingdom ("**Europe**"), see [Notice to European users](#notice-to-european-users).
+**Summary.** We collect what we need to move your Claude Code sessions to a VM and back: your GitHub identity, the sessions you send, and the credentials you choose to store. We do not sell your information, use it for advertising, or use it to train AI models. Bundles are deleted automatically after 7 days, VMs are deleted when their session ends, and `ctransfer account delete` removes the rest, except the few records listed under [Retention](#retention). If you are a California resident, see [State privacy rights](#state-privacy-rights). If you are in the European Economic Area or the United Kingdom ("**Europe**"), see [Notice to European users](#notice-to-european-users).
 
 ## Personal information we collect
 
@@ -50,7 +50,7 @@ We do not look at Your Content except when you ask us to (for example, to help w
 
 | Information | Kept |
 |---|---|
-| Push and export bundles | 7 days after upload, then deleted automatically |
+| Push and export bundles | 7 days after upload, counted to the next midnight UTC, then deleted automatically; `ctransfer ls` and `ctransfer status` show the date for each session brought home |
 | A schedule's snapshot of the session | until you delete the schedule (`ctransfer cron rm`) |
 | VMs and what is on them | until the session is brought home or ended; a VM is brought home after 2 hours idle or 24 hours at most |
 | Claude token and secrets | until you remove them (`ctransfer token rm`, `ctransfer secret rm`) |
