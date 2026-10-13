@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -310,13 +311,19 @@ def cmd_login(args) -> None:
     cfg["token"] = out["token"]
     api_mod.save_config(cfg)
     _print(f"signed in as {out['login']}")
+    if os.environ.get(api_mod.TOKEN_ENV):
+        _print(f"note: {api_mod.TOKEN_ENV} is set, so commands keep using that service token instead of this sign-in "
+               "until you unset it")
 
 
 def cmd_logout(args) -> None:
     cfg = api_mod.load_config()
     cfg.pop("token", None)
     api_mod.save_config(cfg)
-    _print("signed out")
+    if os.environ.get(api_mod.TOKEN_ENV):
+        _print(f"signed out; {api_mod.TOKEN_ENV} is still set, so commands keep using that service token")
+    else:
+        _print("signed out")
 
 
 def cmd_account_delete(args) -> None:
@@ -397,6 +404,91 @@ def add_secret_parser(sub) -> None:
     p = ssub.add_parser("rm", help="delete a secret")
     p.add_argument("name")
     p.set_defaults(fn=cmd_secret_rm)
+
+
+def _service_token_call(method: str, path: str, body: dict | None = None) -> dict:
+    try:
+        return api_mod.Api.from_config().call(method, path, body)
+    except net.HttpError as e:
+        why = api_mod.reason(e)
+        if e.status == 404 and why.startswith("no route"):
+            raise SystemExit("this ctransfer server doesn't have service tokens yet") from None
+        raise SystemExit(why) from None
+
+
+def _expiry(date: str | None) -> int | None:
+    """--expires YYYY-MM-DD: the token works until the end of that day (UTC)."""
+    if date is None:
+        return None
+    try:
+        day = datetime.datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise SystemExit(f"--expires takes a date like 2027-01-31, not {date!r}") from None
+    return int((day + datetime.timedelta(days=1)).timestamp())
+
+
+def _scope_help(scopes: dict) -> str:
+    return "\n".join(f"  --scope {name:<14} {what}" for name, what in scopes.items())
+
+
+def cmd_service_token_create(args) -> None:
+    if not args.scope:
+        scopes = _service_token_call("GET", "/me/service-tokens")["scopes"]
+        raise SystemExit("say what the token may do with --scope, once per permission:\n" + _scope_help(scopes))
+    out = _service_token_call("POST", "/me/service-tokens",
+                              {"name": args.name, "scopes": args.scope, "expires_at": _expiry(args.expires)})
+    print(out["token"])  # alone on stdout, so `ctransfer service-token create ... > file` keeps just the token
+    until = f"until {_utc(out['expires_at'] - 1)}" if out.get("expires_at") else "until you remove it"
+    _print(f"Service token {out['name']} created with scopes {' '.join(out['scopes'])}, valid {until}.\n"
+           "It is shown only this once: store it now, e.g. in your CI's secret store.\n"
+           f"To use it, set {api_mod.TOKEN_ENV} to it on the machine that runs ctransfer, instead of `ctransfer login`.\n"
+           f"Remove it with `ctransfer service-token rm {out['name']}`.")
+
+
+def _when(epoch: int | None) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch)) if epoch else "never"
+
+
+def cmd_service_token_ls(args) -> None:
+    out = _service_token_call("GET", "/me/service-tokens")
+    tokens = out["service_tokens"]
+    if not tokens:
+        _print("no service tokens; create one with `ctransfer service-token create <name> --scope ...`")
+        return
+    now = time.time()
+    print(f"{'NAME':<24} {'SCOPES':<40} {'VALID UNTIL':<20}  LAST USED (to the hour)")
+    for t in tokens:
+        expires = t.get("expires_at")  # the first second it no longer works
+        if not expires:
+            valid = "you remove it"
+        else:  # in UTC, as `create` says it
+            valid = "expired" if expires <= now else _utc(expires - 1)
+        print(f"{t['name']:<24} {' '.join(t['scopes']):<40} {valid:<20}  {_when(t.get('last_used_at'))}")
+    _print(f"{len(tokens)} of {out['max']} service tokens")
+
+
+def cmd_service_token_rm(args) -> None:
+    _service_token_call("DELETE", f"/me/service-tokens/{urllib.parse.quote(args.name, safe='')}")
+    _print(f"service token {args.name} deleted; anything still using it is refused from now on")
+
+
+def add_service_token_parser(sub) -> None:
+    p = sub.add_parser(
+        "service-token", help="tokens that let automation (CI, scripts, agents) use ctransfer as you",
+        description=f"A service token signs ctransfer in where `ctransfer login` can't run, e.g. in CI or on a "
+                    f"server: set {api_mod.TOKEN_ENV} to it and run ctransfer as usual. It can do only what its "
+                    "scopes allow, and never manage service tokens, secrets, billing or delete your account.")
+    tsub = p.add_subparsers(dest="service_token_cmd", required=True)
+    p = tsub.add_parser("create", help="make a token and print it (once; it can't be shown again)")
+    p.add_argument("name", help="what it is for, e.g. github-actions")
+    p.add_argument("--scope", action="append", default=[],
+                   help="something the token may do, e.g. sessions:read; repeat for more (run without to list them)")
+    p.add_argument("--expires", metavar="YYYY-MM-DD", help="last day the token works, in UTC (default: until removed)")
+    p.set_defaults(fn=cmd_service_token_create)
+    tsub.add_parser("ls", help="list your service tokens: scopes, expiry, last use").set_defaults(fn=cmd_service_token_ls)
+    p = tsub.add_parser("rm", help="delete a token; anything using it stops working")
+    p.add_argument("name")
+    p.set_defaults(fn=cmd_service_token_rm)
 
 
 def prompt_arg(args) -> str | None:
@@ -946,6 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=("set", "rm"))
     p.set_defaults(fn=cmd_token)
     add_secret_parser(sub)
+    add_service_token_parser(sub)
 
     def session_args(p):
         p.add_argument("--session", help="session id (default: newest session for --cwd)")

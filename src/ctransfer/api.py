@@ -15,6 +15,9 @@ DEFAULT_API_URL = "https://api.ctransfer.itschrispy.com"
 TERMS_URL = "https://ctransfer.itschrispy.com/terms"
 PRIVACY_URL = "https://ctransfer.itschrispy.com/privacy"
 ACCOUNT_URL = "https://ctransfer.itschrispy.com/account"  # plans and payments: the website is the only place to pay
+# A service token (`ctransfer service-token create`) for machines where `ctransfer login` can't run: CI, scripts, VMs.
+# When set, it is used instead of the saved sign-in, and never written to the config file.
+TOKEN_ENV = "CTRANSFER_TOKEN"
 
 
 def load_config() -> dict:
@@ -37,10 +40,14 @@ class Api:
 
     @classmethod
     def from_config(cls, *, signed_in: bool = True) -> "Api":
+        """The api, with the token to send: CTRANSFER_TOKEN, else the saved sign-in. signed_in=False (signing in)
+        sends none."""
         cfg = load_config()
-        if signed_in and not cfg.get("token"):
-            raise SystemExit("not signed in: run `ctransfer login`")
-        return cls(cfg.get("api_url") or DEFAULT_API_URL, cfg.get("token"))
+        token = (os.environ.get(TOKEN_ENV) or cfg.get("token")) if signed_in else None
+        if signed_in and not token:
+            raise SystemExit(f"not signed in: run `ctransfer login` (or, in automation, set {TOKEN_ENV} to a service "
+                             "token)")
+        return cls(cfg.get("api_url") or DEFAULT_API_URL, token)
 
     def call(self, method: str, path: str, body: dict | None = None) -> dict:
         headers = {"authorization": f"Bearer {self.token}"} if self.token else {}
@@ -54,7 +61,7 @@ def login(api: Api, *, notify=print, sleep=time.sleep) -> dict:
     try:
         code = api.call("POST", "/auth/github/device", {})
     except net.HttpError as e:
-        raise SystemExit(f"couldn't start signing in: {_reason(e)}") from None
+        raise SystemExit(f"couldn't start signing in: {reason(e)}") from None
     notify(f"open {code['verification_uri']} and enter code {code['user_code']}")
     interval = int(code.get("interval", 5))
     deadline = time.time() + int(code.get("expires_in", 900))
@@ -65,7 +72,7 @@ def login(api: Api, *, notify=print, sleep=time.sleep) -> dict:
         except net.HttpError as e:
             if e.status == 429 or e.status >= 500:
                 continue  # a passing hiccup; the code is still good, so keep polling until it expires
-            raise SystemExit(f"GitHub sign-in failed: {_reason(e)}") from None
+            raise SystemExit(f"GitHub sign-in failed: {reason(e)}") from None
         except OSError:
             continue  # the network dropped for a moment; same as above
         if not out.get("pending"):
@@ -74,7 +81,7 @@ def login(api: Api, *, notify=print, sleep=time.sleep) -> dict:
     raise SystemExit("GitHub sign-in timed out; run `ctransfer login` again")
 
 
-def _reason(e: net.HttpError) -> str:
+def reason(e: net.HttpError) -> str:
     """The error message from a control-plane reply, or a short stand-in for one that isn't ours (e.g. HTML)."""
     try:
         return str(json.loads(e.body)["error"])

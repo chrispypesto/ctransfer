@@ -13,10 +13,11 @@ from ctransfer.sessions import encode_project_dir
 @pytest.fixture(autouse=True)
 def hermetic(tmp_path, monkeypatch):
     """Keep ctransfer state out of the real ~/.config (in subprocesses too, e.g. detached workers), and ignore
-    the Claude session running the tests."""
+    the Claude session running the tests and any service token in the environment."""
     monkeypatch.setattr(api_mod, "CONFIG_PATH", tmp_path / "config" / "config.json")
     monkeypatch.setenv("CTRANSFER_CONFIG", str(api_mod.CONFIG_PATH))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv(api_mod.TOKEN_ENV, raising=False)
 
 
 def configure_signed_in(api_url: str = "https://api.invalid/") -> None:

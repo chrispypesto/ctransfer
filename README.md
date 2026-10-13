@@ -159,6 +159,28 @@ How a task works:
 - If Claude stops on your account's usage limit, the task shows as `paused: usage limit`, with the time the limit resets. Send a follow-up after that time to carry on.
 - Tasks count against your plan like pushes and scheduled runs: launches per day, VMs at once, and VM-hours (free) or credit (Pro).
 
+## Automation (service tokens)
+
+`ctransfer login` needs you at a browser to enter a code. To use ctransfer from CI, a script, a server or an agent, create a service token once and give it to that machine:
+
+```bash
+ctransfer service-token create github-ci --scope sessions:read --scope sessions:run [--expires 2027-01-31]
+ctransfer service-token ls                 # names, scopes, expiry, last use
+ctransfer service-token rm github-ci       # anything using it is refused from then on
+```
+
+`create` prints the token once; store it in the machine's secret store (e.g. your CI's secrets). On that machine, set `CTRANSFER_TOKEN` to it and run ctransfer as usual, without `ctransfer login`:
+
+```bash
+export CTRANSFER_TOKEN=cts_...
+ctransfer ls
+```
+
+- A token acts as you, but only for what its scopes allow. `create` without `--scope` lists the scopes. Your plan's limits apply as usual.
+- No token can create, list or remove service tokens, change your Claude token or secrets, open billing, or delete your account; sign in yourself for those.
+- When `CTRANSFER_TOKEN` is set, it is used instead of any saved sign-in, and it is never written to disk.
+- `--expires` is the last day (UTC) the token works; without it, it works until you remove it. Deleting your account removes every token. Each account can have a limited number at once; `ls` shows how many.
+
 ## Terms, privacy and license
 
 Using the hosted service means agreeing to the [Terms of Use](https://ctransfer.itschrispy.com/terms) ([TERMS.md](TERMS.md)). The [Privacy Policy](https://ctransfer.itschrispy.com/privacy) ([PRIVACY.md](PRIVACY.md)) says what the service stores, for how long, and how `ctransfer account delete` removes it. The client and plugin in this repo are MIT licensed ([LICENSE](LICENSE)).
