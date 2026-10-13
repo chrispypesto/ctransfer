@@ -137,6 +137,28 @@ How a run works:
 - Runs count against your plan like pushes do: launches per day, VMs at once, and VM-hours (free) or credit (Pro). A run that a limit refuses shows as `refused` in `cron logs`.
 - A run doesn't start while the previous one is still going.
 
+## Tasks
+
+`ctransfer task` runs Claude on a GitHub repo without your laptop: no local folder or session is sent. You can then continue the same conversation with follow-ups, for example to address review comments:
+
+```bash
+ctransfer task start owner/repo --ref my-branch --prompt 'Fix the flaky test and open a PR' --label issue=42
+ctransfer task show <task-id>          # status, Claude's final message, cost, turns, permission denials, session id
+ctransfer task ls [--label issue=42]
+ctransfer task follow-up <task-id> --prompt 'Address the review comment on line 12' --wait
+ctransfer task rm <task-id>            # also stops a step that is still running
+```
+
+`start` and `follow-up` print the task id on stdout, so scripts can capture it. With `--wait` they print the result when the step ends and exit 1 unless it succeeded.
+
+How a task works:
+- Each step (the start, then each follow-up) gets its own short-lived VM and runs one headless turn under `--timeout`, like a scheduled run.
+- The first step clones the repo at `--ref` (default: its default branch) with your `GH_TOKEN` or `GITHUB_TOKEN` secret, which a private repo needs (see GitHub above). Commits made on the VM are authored as your GitHub login with its noreply address. Your laptop's Claude config (`CLAUDE.md`, `settings.json`, MCP servers) is not part of a task.
+- When a step ends, its transcript and the whole workspace, uncommitted changes included, are saved. A follow-up starts a new VM from that state and resumes the same session: the same session id, the full conversation so far, no fork.
+- Only one step runs at a time: a follow-up sent while a step is running is refused. If no step got as far as saving its state (say its VM never started), a follow-up starts again from the repo. Saved state expires a week after its step ends; a follow-up after that is refused, so start a new task.
+- If Claude stops on your account's usage limit, the task shows as `paused: usage limit`, with the time the limit resets. Send a follow-up after that time to carry on.
+- Tasks count against your plan like pushes and scheduled runs: launches per day, VMs at once, and VM-hours (free) or credit (Pro).
+
 ## Terms, privacy and license
 
 Using the hosted service means agreeing to the [Terms of Use](https://ctransfer.itschrispy.com/terms) ([TERMS.md](TERMS.md)). The [Privacy Policy](https://ctransfer.itschrispy.com/privacy) ([PRIVACY.md](PRIVACY.md)) says what the service stores, for how long, and how `ctransfer account delete` removes it. The client and plugin in this repo are MIT licensed ([LICENSE](LICENSE)).
