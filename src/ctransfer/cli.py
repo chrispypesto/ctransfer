@@ -456,10 +456,10 @@ def cmd_service_token_ls(args) -> None:
         _print("no service tokens; create one with `ctransfer service-token create <name> --scope ...`")
         return
     now = time.time()
-    print(f"{'NAME':<24} {'SCOPES':<40} {'EXPIRES':<16}  LAST USED (to the hour)")
+    print(f"{'NAME':<24} {'SCOPES':<40} {'VALID UNTIL':<16}  LAST USED (to the hour)")
     for t in tokens:
-        expires = t.get("expires_at")
-        expiry = "never" if not expires else ("expired" if expires <= now else _when(expires))
+        expires = t.get("expires_at")  # the first second it no longer works
+        expiry = "removed" if not expires else ("expired" if expires <= now else _when(expires - 1))
         print(f"{t['name']:<24} {' '.join(t['scopes']):<40} {expiry:<16}  {_when(t.get('last_used_at'))}")
     _print(f"{len(tokens)} of {out['max']} service tokens")
 
