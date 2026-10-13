@@ -141,3 +141,24 @@ def test_account_delete_asks_first_and_changes_nothing_unless_confirmed(monkeypa
     with pytest.raises(SystemExit, match="not deleted"):
         cli.main(["account", "delete"])
     assert api_mod.load_config()["token"] == "test-token"
+
+
+def test_a_service_token_in_the_environment_signs_commands_in_without_saving_it(monkeypatch, capsys):
+    with pytest.raises(SystemExit, match="CTRANSFER_TOKEN"):  # neither signed in nor a token: says both ways
+        cli.main(["account", "delete", "--yes"])
+    monkeypatch.setenv("CTRANSFER_TOKEN", "cts_test")
+    with pytest.raises(SystemExit, match="--yes"):  # past the sign-in check, at the confirmation
+        cli.main(["account", "delete"])
+    assert api_mod.Api.from_config().token == "cts_test"
+
+    configure_signed_in()  # the env token wins over a saved sign-in...
+    assert api_mod.Api.from_config().token == "cts_test"
+    cli.main(["logout"])  # ...and is never written to the config
+    assert "token" not in api_mod.load_config()
+    assert "CTRANSFER_TOKEN is still set" in capsys.readouterr().err
+
+
+def test_service_token_expiry_must_be_a_date():
+    configure_signed_in()  # api.invalid: reaching the control plane would fail the test
+    with pytest.raises(SystemExit, match="--expires takes a date like"):
+        cli.main(["service-token", "create", "ci", "--scope", "sessions:read", "--expires", "31/12/2026"])
