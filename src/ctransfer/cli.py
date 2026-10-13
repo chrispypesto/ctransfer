@@ -792,9 +792,24 @@ def cmd_cron_run(args) -> None:
           f"results: ctransfer cron logs {out['schedule_id']}")
 
 
+def _setup_bits(result: dict) -> list[str]:
+    """How long the repo's setup script took, for a run's or step's summary line."""
+    setup = result.get("setup") or {}
+    return [f"setup {setup['seconds'] / 60:.1f} min"] if isinstance(setup.get("seconds"), (int, float)) else []
+
+
+def _setup_failure(result: dict, lines: int = 20) -> list[str]:
+    """The end of the repo's setup script's output when it failed, which is where the reason usually is."""
+    setup = result.get("setup") or {}
+    if not setup or setup.get("exit_code") == 0:
+        return []
+    tail = str(setup.get("output") or "").rstrip().splitlines()[-lines:]
+    return ["  setup output (last lines):", *(f"    {line}" for line in tail)] if tail else []
+
+
 def _run_line(run: dict) -> str:
     result = run.get("result") or {}
-    bits = [_utc(run.get("created_at")), run["status"], f"run {run['run_id']}"]
+    bits = [_utc(run.get("created_at")), run["status"], f"run {run['run_id']}", *_setup_bits(result)]
     if result.get("duration_ms"):
         bits.append(f"{result['duration_ms'] / 60000:.1f} min")
     if result.get("total_cost_usd") is not None:
@@ -814,6 +829,8 @@ def cmd_cron_logs(args) -> None:
         for line in filter(None, [run.get("error"), run.get("failure_reason"), result.get("error"),
                                   result.get("workspace_update")]):
             print(f"  ({line})")
+        for line in _setup_failure(result):
+            print(line)
         if result.get("text"):
             print("  " + result["text"].replace("\n", "\n  "))
         print()
@@ -935,7 +952,7 @@ def cmd_task_follow_up(args) -> None:
 
 def _step_line(step: dict) -> str:
     result = step.get("result") or {}
-    bits = [f"step {step['step']}", _utc(step.get("created_at")), step["status"]]
+    bits = [f"step {step['step']}", _utc(step.get("created_at")), step["status"], *_setup_bits(result)]
     if result.get("duration_ms"):
         bits.append(f"{result['duration_ms'] / 60000:.1f} min")
     if result.get("total_cost_usd") is not None:
@@ -961,6 +978,7 @@ def _task_text(task: dict) -> str:
         lines += ["", _step_line(step), "  prompt: " + " ".join(step["prompt"].split())[:200]]
         for line in filter(None, [step.get("error"), step.get("failure_reason"), result.get("error")]):
             lines.append(f"  ({line})")
+        lines += _setup_failure(result)
         if result.get("text"):
             lines.append("  " + result["text"].replace("\n", "\n  "))
     return "\n".join(lines)

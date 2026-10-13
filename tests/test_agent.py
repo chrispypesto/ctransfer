@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ctransfer import agent, bundle, sessions
+from ctransfer import agent, bundle, cli, sessions
 from tests.conftest import add_replies, make_repo, run_git
 
 BOOT = {"transfer_id": "t1", "agent_url": "https://agent.example/", "agent_token": "tok", "claude_token": "sk-ant-oat-x"}
@@ -500,6 +500,12 @@ def test_a_failing_setup_script_ends_the_run_before_claude_starts_and_reports_it
     assert result["setup"]["exit_code"] == 3
     output = result["setup"]["output"]
     assert len(output) == agent.SETUP_OUTPUT_MAX and output.endswith("step 5000\nconda: no space left on device\n")
+    # What `ctransfer task show` prints of it: the reason, then the end of the script's output.
+    shown = cli._task_text({"task_id": "task1", "repo": "example/repo", "status": "error", "session_id": TASK_SID,
+                            "permission_mode": "default", "steps": [{"step": 1, "status": "error", "prompt": "x",
+                                                                     "result": result}]})
+    assert f"  ({result['error']})\n  setup output (last lines):\n" in shown
+    assert shown.endswith("    step 4999\n    step 5000\n    conda: no space left on device")
 
 
 def test_a_run_that_stops_on_the_usage_limit_reports_when_the_limit_resets(tmp_path, monkeypatch):
