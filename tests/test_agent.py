@@ -324,18 +324,33 @@ def restore_on_vm(tmp_path: Path, monkeypatch, vm: str, boot: dict, bundle_dir: 
     return vm_home, json.loads((tmp_path / vm / "state.json").read_text())
 
 
-def run_headless_turn(tmp_path: Path, vm_home: Path, state: dict, reply: str) -> list[str]:
+def run_headless_turn(tmp_path: Path, vm_home: Path, state: dict, reply: str, *, limit_resets_at: int | None = None) -> list[str]:
     """Runs the launcher the agent wrote against a stand-in claude that appends a turn to the session's transcript
-    and answers like `claude -p --output-format json`. Returns the argv claude got."""
+    and answers like `claude -p --output-format stream-json --verbose` (message lines as claude 2.1.296 writes them,
+    the result last). limit_resets_at: claude stops on the usage limit instead. Returns the argv claude got."""
     transcript = Path(state["claude_home"]) / "projects" / state["project_dir"] / f"{state['session_id']}.jsonl"
+    sid = state["session_id"]
+    if limit_resets_at is None:
+        lines = [{"type": "system", "subtype": "init", "session_id": sid},
+                 {"type": "rate_limit_event", "session_id": sid,
+                  "rate_limit_info": {"status": "allowed", "resetsAt": 1, "rateLimitType": "five_hour"}},
+                 {"type": "result", "subtype": "success", "session_id": sid, "result": reply, "is_error": False,
+                  "num_turns": 2, "total_cost_usd": 0.31, "permission_denials": []}]
+    else:
+        lines = [{"type": "system", "subtype": "init", "session_id": sid},
+                 {"type": "rate_limit_event", "session_id": sid, "rate_limit_info": {
+                     "status": "rejected", "resetsAt": limit_resets_at, "rateLimitType": "five_hour"}},
+                 {"type": "result", "subtype": "success", "session_id": sid, "result": reply, "is_error": True,
+                  "num_turns": 1, "total_cost_usd": 0}]
     stub = vm_home / ".local" / "bin" / "claude"
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_text(f"#!{sys.executable}\nimport json, pathlib, sys\n"
                     f"t = pathlib.Path({str(transcript)!r}); t.parent.mkdir(parents=True, exist_ok=True)\n"
-                    f"with t.open('a') as f: f.write(json.dumps({{'type': 'user', 'sessionId': {state['session_id']!r}, "
+                    f"with t.open('a') as f: f.write(json.dumps({{'type': 'user', 'sessionId': {sid!r}, "
                     "'message': {'content': sys.argv[2]}}) + '\\n')\n"
-                    f"print(json.dumps({{'session_id': {state['session_id']!r}, 'result': {reply!r}, 'is_error': False, "
-                    "'num_turns': 2, 'argv': sys.argv[1:]}))\n")
+                    f"pathlib.Path({str(tmp_path / 'argv.json')!r}).write_text(json.dumps(sys.argv[1:]))\n"
+                    f"for line in {lines!r}: print(json.dumps(line))\n"
+                    f"sys.exit({1 if limit_resets_at else 0})\n")
     stub.chmod(0o755)
     shim = tmp_path / "coreutils" / "timeout"  # Ubuntu's coreutils timeout, which macOS lacks: drop the limits, run
     if not shim.exists():
@@ -344,7 +359,7 @@ def run_headless_turn(tmp_path: Path, vm_home: Path, state: dict, reply: str) ->
         shim.chmod(0o755)
     subprocess.run(["bash", str(vm_home / ".ctransfer" / "launch.sh")],
                    env={"HOME": str(vm_home), "PATH": f"{shim.parent}:/usr/bin:/bin"}, check=True)
-    return json.loads((vm_home / ".ctransfer" / "run" / "result.json").read_text())["argv"]
+    return json.loads((tmp_path / "argv.json").read_text())
 
 
 def export_from_vm(tmp_path: Path, state: dict, name: str) -> tuple[Path, dict]:
@@ -387,6 +402,8 @@ def test_a_task_clones_its_repo_at_the_ref_and_a_follow_up_resumes_the_same_sess
 
     uploaded, report = export_from_vm(tmp_path, state, "step1")
     assert report["result"]["text"] == "fixed it" and report["result"]["session_id"] == TASK_SID
+    assert report["result"]["total_cost_usd"] == 0.31 and "usage_limit" not in report["result"]
+    assert argv[argv.index("--output-format") + 1:][:2] == ["stream-json", "--verbose"]
     assert report["result"]["workspace_update"] == "cloned example/repo at feature"
 
     shutil.rmtree(path)  # the follow-up runs on another VM
@@ -418,3 +435,16 @@ def test_a_task_whose_repo_cannot_be_cloned_ends_at_once_saying_why(tmp_path, mo
     result = report["result"]
     assert result["exit_code"] == 1 and result["error"].startswith("couldn't clone example/private at main: ")
     assert "ctransfer secret set GH_TOKEN" in result["error"]  # no GitHub token stored: say how to add one
+
+
+def test_a_run_that_stops_on_the_usage_limit_reports_when_the_limit_resets(tmp_path, monkeypatch):
+    src = make_repo(tmp_path / "src" / "repo")
+    path = str(tmp_path / "vm-fs" / "repo")
+    run = {"prompt": "x", "note": "n", "timeout_sec": 600, "permission_mode": "default",
+           "repo": {"name": "example/repo", "url": str(src), "ref": "", "path": path}}
+    vm_home, state = restore_on_vm(tmp_path, monkeypatch, "vm", task_boot(run), tmp_path / "vm" / "bundle")
+    assert state["workspace_update"] == "cloned example/repo"  # no ref: the default branch
+    run_headless_turn(tmp_path, vm_home, state, "You've hit your limit", limit_resets_at=1_800_018_000)
+    _, report = export_from_vm(tmp_path, state, "step1")
+    assert report["result"]["usage_limit"] == {"resets_at": 1_800_018_000, "type": "five_hour"}
+    assert report["result"]["is_error"] and report["result"]["text"] == "You've hit your limit"

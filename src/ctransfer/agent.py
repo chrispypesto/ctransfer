@@ -390,7 +390,7 @@ def _launch_run(state: dict, home: Path, run: dict) -> None:
     claude = " ".join([
         f"timeout --kill-after=30 {int(run['timeout_sec'])}", "\"$HOME/.local/bin/claude\"",
         "-p", shlex.quote(run_prompt(run)), shlex.join(session),
-        "--output-format", "json", "--permission-mode", shlex.quote(run.get("permission_mode") or "default")])
+        "--output-format", "stream-json", "--verbose", "--permission-mode", shlex.quote(run.get("permission_mode") or "default")])
     launcher = _write_launcher(state, home,
                                f"{claude} > \"$HOME/.ctransfer/run/result.json\" 2> \"$HOME/.ctransfer/run/stderr.log\"\n"
                                "echo $? > \"$HOME/.ctransfer/run/exit_code\"")
@@ -415,15 +415,36 @@ def _update_workspace(state: dict, ws: dict) -> str:
     return f"fast-forwarded from {remotes[0]}/{ws['branch']}"
 
 
+def read_output(path: Path) -> tuple[dict, dict | None]:
+    """claude -p's output: (its result message, the last rate-limit info it reported, if any). The run writes
+    stream-json, one message per line, the result last; a single JSON object (--output-format json, from agents before
+    stream-json) is read as the result."""
+    reply, limit = {}, None
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return reply, limit
+    for line in lines:
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(message, dict):
+            continue
+        if message.get("type") == "rate_limit_event":
+            limit = message.get("rate_limit_info") or None
+        elif message.get("type") in ("result", None):
+            reply = message
+    return reply, limit
+
+
 def run_result(home: Path) -> dict:
-    """What a finished run reports: claude's JSON result (trimmed), or why there is none."""
+    """What a finished run reports: claude's result (trimmed), or why there is none. usage_limit is set when claude
+    stopped on the account's usage limit: a rate-limit event with status rejected, and no successful result."""
     out = run_dir(home)
     code = (out / "exit_code").read_text().strip() if (out / "exit_code").exists() else ""
     result: dict = {"exit_code": int(code) if code.lstrip("-").isdigit() else None}
-    try:
-        reply = json.loads((out / "result.json").read_text())
-    except (OSError, ValueError):
-        reply = {}
+    reply, limit = read_output(out / "result.json")
     for key in ("session_id", "is_error", "subtype", "num_turns", "total_cost_usd", "duration_ms"):
         if key in reply:
             result[key] = reply[key]
@@ -438,6 +459,8 @@ def run_result(home: Path) -> dict:
             pass
         if result["exit_code"] == 124:
             result["error"] = "timed out"
+        if limit and limit.get("status") == "rejected":
+            result["usage_limit"] = {"resets_at": limit.get("resetsAt"), "type": limit.get("rateLimitType")}
     return result
 
 
