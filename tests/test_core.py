@@ -1,4 +1,7 @@
+import io
 import json
+import os
+import socket
 import tarfile
 from pathlib import Path
 
@@ -290,3 +293,44 @@ def test_pull_into_a_plain_folder_pushed_from_elsewhere_refuses_any_local_differ
     with pytest.raises(apply.ApplyError, match=r"plan\.txt"):
         apply.apply_export(tmp_path / "x", export(), home=home)
     assert (folder / "plan.txt").read_text() == "v1\n"
+
+
+def test_pull_into_a_plain_folder_refuses_local_edits_before_the_export(tmp_path):
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    (folder / "plan.txt").write_text("edited here after the push\n")
+
+    with pytest.raises(apply.ApplyError, match=r": plan\.txt\. Nothing was changed\. .*--force"):
+        apply.check_before_export(pushed, home=home)
+    apply.check_before_export(pushed, home=home, force=True)
+
+    # The VM left plan.txt alone: the cloud copy is still the pushed version, and the local edit is still newer.
+    with pytest.raises(apply.ApplyError, match=r"plan\.txt"):
+        apply.apply_export(tmp_path / "x", export(), home=home, pushed_files=pushed["workspace"]["files"])
+    assert (folder / "plan.txt").read_text() == "edited here after the push\n"
+
+
+def test_push_of_a_plain_folder_with_a_fifo_and_a_socket(tmp_path):
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    (folder / "a.txt").write_text("a")
+    os.mkfifo(folder / "pipe")
+    sock = socket.socket(socket.AF_UNIX)
+    sock.bind(str(folder / "s.sock"))
+    try:
+        meta = workspace.capture(folder, tmp_path / "ws")
+    finally:
+        sock.close()
+    assert set(meta["files"]) == {"a.txt"}
+
+
+def test_pull_ignores_archive_entries_outside_the_folder(tmp_path):
+    """Only what extraction would write inside the folder is compared (and backed up with --force)."""
+    folder, outside, src = tmp_path / "notes", tmp_path / "outside.txt", tmp_path / "ws"
+    folder.mkdir()
+    src.mkdir()
+    outside.write_text("not part of the folder\n")
+    with tarfile.open(src / "tree.tar", "w") as tf:
+        info = tarfile.TarInfo("../outside.txt")
+        info.size = 5
+        tf.addfile(info, io.BytesIO(b"other"))
+    assert workspace.tree_conflicts(src, folder, {}) == []

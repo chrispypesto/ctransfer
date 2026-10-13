@@ -121,8 +121,10 @@ def _capture_tree(root: Path, out: Path) -> dict:
                     skipped.append(rel)
                     continue
                 # Fingerprint before archiving: a file edited in between then only makes pull see a mismatch and
-                # refuse, never a match that would let pull overwrite an edit the archive doesn't have.
-                files[rel] = _fingerprint(full)
+                # refuse, never a match that would let pull overwrite an edit the archive doesn't have. Only files
+                # and symlinks, what pull compares: opening a FIFO would block, a socket can't be opened.
+                if full.is_symlink() or full.is_file():
+                    files[rel] = _fingerprint(full)
                 tf.add(full, arcname=rel, recursive=False)
     return {"kind": "tree", "root": str(root), "skipped": sorted(skipped), "files": files}
 
@@ -183,12 +185,18 @@ def tree_conflicts(src, root, pushed_files: dict | None) -> list[str]:
         for member in tf:
             if not (member.isfile() or member.issym()):
                 continue
-            local = _local_fingerprint(root, member.name)
+            # The name extraction will use, from the same filter; a member it refuses (one that would land
+            # outside root) is never extracted, so it overwrites nothing here.
+            try:
+                name = tarfile.data_filter(member, str(root)).name
+            except tarfile.FilterError:
+                continue
+            local = _local_fingerprint(root, name)
             if local is None or local == _member_fingerprint(tf, member):
                 continue
-            if pushed_files is not None and pushed_files.get(member.name) == local:
+            if pushed_files is not None and pushed_files.get(name) == local:
                 continue
-            conflicts.append(member.name)
+            conflicts.append(name)
     return sorted(conflicts)
 
 
