@@ -183,7 +183,9 @@ def tree_conflicts(src, root, pushed_files: dict | None) -> list[str]:
     conflicts = []
     with tarfile.open(tar_path) as tf:
         for member in tf:
-            if not (member.isfile() or member.issym()):
+            # A hard link (a second path to a file already archived) is written over a local file with its
+            # target's bytes, so it counts like a file.
+            if not (member.isfile() or member.islnk() or member.issym()):
                 continue
             # The name extraction will use, from the same filter; a member it refuses (one that would land
             # outside root) is never extracted, so it overwrites nothing here.

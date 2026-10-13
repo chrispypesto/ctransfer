@@ -219,7 +219,7 @@ def test_push_bundle_still_requires_a_transcript(tmp_path):
         bundle.build(tmp_path / "b.tgz", kind="push", home=tmp_path, session_id="s", project_dir="p", cwd=str(tmp_path))
 
 
-def _plain_folder_round(tmp_path):
+def _plain_folder_round(tmp_path, links=None):
     """A non-git folder sent to a VM (as `ctransfer new` does) and restored there. Returns (folder, push manifest,
     vm folder, export(): the VM's copy brought back as pull receives it)."""
     folder = tmp_path / "laptop" / "notes"
@@ -227,6 +227,8 @@ def _plain_folder_round(tmp_path):
     (folder / "plan.txt").write_text("v1\n")
     (folder / "todo.txt").write_text("todo v1\n")
     (folder / ".env").write_text("SECRET=1\n")
+    for link, target in (links or {}).items():
+        os.link(folder / target, folder / link)
     sid = "6f1d2c3b-0a9e-4b8c-8d7f-1e2a3b4c5d6e"
     project_dir = sessions.encode_project_dir(str(folder))
     home = tmp_path / "laptop" / ".claude"
@@ -334,3 +336,22 @@ def test_pull_ignores_archive_entries_outside_the_folder(tmp_path):
         info.size = 5
         tf.addfile(info, io.BytesIO(b"other"))
     assert workspace.tree_conflicts(src, folder, {}) == []
+
+
+def test_pull_into_a_plain_folder_backs_up_an_edited_hard_link(tmp_path):
+    """Of two hard-linked files, the archive holds the second as a link to the first; an editor that saves by
+    rename breaks the link locally, and that file's edit must not be lost."""
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path, links={"b.txt": "plan.txt"})
+    manifest = export()
+    with tarfile.open(tmp_path / "x" / "workspace" / "tree.tar") as tf:
+        [link] = [m.name for m in tf if m.islnk()]
+    (folder / "edit.tmp").write_text("edited here\n")
+    os.replace(folder / "edit.tmp", folder / link)
+    with pytest.raises(apply.ApplyError, match=rf": {link}\."):
+        apply.apply_export(tmp_path / "x", manifest, home=home, pushed_files=pushed["workspace"]["files"])
+
+    result = apply.apply_export(tmp_path / "x", manifest, home=home, force=True,
+                                pushed_files=pushed["workspace"]["files"])
+    assert result["overwritten"] == [link]
+    assert (Path(result["backup"]) / "workspace" / link).read_text() == "edited here\n"
+    assert (folder / link).read_text() == "v1\n"
