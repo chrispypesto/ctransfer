@@ -18,6 +18,9 @@ clones a GitHub repo at a ref and starts a fresh session under the control plane
 from the previous step's export and resumes that same session (no fork), so its transcript and workspace, uncommitted
 changes included, carry on from step to step.
 
+Before a headless run's claude starts, the workspace's own setup script (.ctransfer/setup.sh, if it has one) installs
+what the repo needs; if it fails, claude never starts and the run's result says why.
+
 Standard library only: this file ships inside every bundle and runs on a stock Ubuntu image.
 """
 
@@ -49,6 +52,9 @@ RESULT_TEXT_MAX = 8000  # chars of the run's final message reported to the contr
 # VMs itself and reads FEATURES to tell whether it can.
 FEATURES = ("task",)
 CLONE_TIMEOUT_SEC = 900
+# A repo's own setup (tools, dependencies), run in the workspace root before a headless run's claude starts.
+SETUP_SCRIPT = ".ctransfer/setup.sh"
+SETUP_OUTPUT_MAX = 4000  # bytes of the end of the setup script's output reported with the run's result
 
 UNIT = """[Unit]
 Description=ctransfer session agent
@@ -378,11 +384,30 @@ def run_prompt(run: dict) -> str:
     return f"{run['note']}\n\nThe task:\n{run['prompt']}"
 
 
+# The part of a headless run's launcher before claude: the workspace's setup script, if it has one, run from the
+# workspace root with the user's secrets in its environment (the launcher has exported them) and within the run's time
+# limit. It may append shell assignments (PATH="$HOME/tool/bin:$PATH") to the file $CTRANSFER_SETUP_ENV names; claude
+# starts with them. If it fails, claude doesn't start. Claude gets what is left of the time limit, at least a minute.
+RUN_SETUP = """started=$(date +%s)
+run="$HOME/.ctransfer/run"
+if [ -f {script} ]; then
+  : > "$run/setup.env"
+  (cd {root} && CTRANSFER_SETUP_ENV="$run/setup.env" timeout --kill-after=30 {timeout} bash {script}) \\
+    < /dev/null > "$run/setup.log" 2>&1
+  code=$?
+  echo "$code $(( $(date +%s) - started ))" > "$run/setup"
+  if [ "$code" -ne 0 ]; then echo 1 > "$run/exit_code"; exit 0; fi
+  set -a; . "$run/setup.env"; set +a
+fi
+left=$(( {timeout} - ($(date +%s) - started) )); [ "$left" -ge 60 ] || left=60
+"""
+
+
 def _launch_run(state: dict, home: Path, run: dict) -> None:
-    """One headless turn. A scheduled run's is on a fork of the pushed session: --fork-session writes the turn to a
-    new transcript, so the pushed one (every run's starting point) never grows. A task's first step starts its session
-    under the given id; a follow-up resumes that same session, so the task's turns stay one conversation. A coreutils
-    timeout bounds the run."""
+    """One headless turn, after the workspace's setup script (RUN_SETUP). A scheduled run's turn is on a fork of the
+    pushed session: --fork-session writes the turn to a new transcript, so the pushed one (every run's starting point)
+    never grows. A task's first step starts its session under the given id; a follow-up resumes that same session, so
+    the task's turns stay one conversation. A coreutils timeout bounds the run, setup included."""
     out = run_dir(home)
     out.mkdir(parents=True, exist_ok=True)
     if run.get("repo"):
@@ -390,13 +415,16 @@ def _launch_run(state: dict, home: Path, run: dict) -> None:
     else:
         session = ["--resume", state["session_id"], *([] if run.get("continue") else ["--fork-session"]),
                    *sessions.model_args(transcript_path(state))]
+    timeout = int(run["timeout_sec"])
+    setup = RUN_SETUP.format(script=shlex.quote(str(Path(state["vm_root"]) / SETUP_SCRIPT)),
+                             root=shlex.quote(state["vm_root"]), timeout=timeout)
     claude = " ".join([
-        f"timeout --kill-after=30 {int(run['timeout_sec'])}", "\"$HOME/.local/bin/claude\"",
+        "timeout --kill-after=30 \"$left\"", "\"$HOME/.local/bin/claude\"",
         "-p", shlex.quote(run_prompt(run)), shlex.join(session),
         "--output-format", "stream-json", "--verbose", "--permission-mode", shlex.quote(run.get("permission_mode") or "default")])
     launcher = _write_launcher(state, home,
-                               f"{claude} > \"$HOME/.ctransfer/run/result.json\" 2> \"$HOME/.ctransfer/run/stderr.log\"\n"
-                               "echo $? > \"$HOME/.ctransfer/run/exit_code\"")
+                               f"{setup}{claude} > \"$run/result.json\" 2> \"$run/stderr.log\"\n"
+                               "echo $? > \"$run/exit_code\"")
     _start_in_tmux(state, home, launcher)
 
 
@@ -464,7 +492,29 @@ def run_result(home: Path) -> dict:
             result["error"] = "timed out"
         if limit and limit.get("status") == "rejected":
             result["usage_limit"] = {"resets_at": limit.get("resetsAt"), "type": limit.get("rateLimitType")}
+    setup = setup_report(out)
+    if setup is not None:
+        result["setup"] = setup
+        if setup["exit_code"] in (124, 137):  # coreutils timeout: ran out of time, then killed after the grace period
+            result["error"] = f"the repo's setup script {SETUP_SCRIPT} didn't finish within the time limit, so Claude didn't start"
+        elif setup["exit_code"] != 0:
+            result["error"] = (f"the repo's setup script {SETUP_SCRIPT} failed with exit code {setup['exit_code']} "
+                               f"after {setup['seconds']} s, so Claude didn't start")
     return result
+
+
+def setup_report(out: Path) -> dict | None:
+    """How the workspace's setup script went, if the run had one: its exit code, how long it took, and the end of its
+    output (stdout and stderr together)."""
+    try:
+        code, seconds = (out / "setup").read_text().split()
+    except (OSError, ValueError):
+        return None
+    try:
+        output = (out / "setup.log").read_bytes()[-SETUP_OUTPUT_MAX:].decode(errors="replace")
+    except OSError:
+        output = ""
+    return {"exit_code": int(code), "seconds": int(seconds), "output": output}
 
 
 def install_service(state_path: Path) -> None:

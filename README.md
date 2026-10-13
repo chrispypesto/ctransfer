@@ -160,6 +160,21 @@ How a task works:
 - If Claude stops on your account's usage limit, the task shows as `paused: usage limit`, with the time the limit resets. Send a follow-up after that time to carry on.
 - Tasks count against your plan like pushes and scheduled runs: launches per day, VMs at once, and VM-hours (free) or credit (Pro).
 
+### Setup script
+
+The VM comes with git, tmux, curl, Python 3 and (with a GitHub token) `gh`. If your repo needs more to build or test (a language toolchain, Docker, a database), commit a script at `.ctransfer/setup.sh`. Before Claude starts, every task step and scheduled run runs it with bash:
+- from the repo's root, as the VM's user, who can use `sudo` (for `apt-get install`, say);
+- with your secrets as environment variables, as Claude gets them;
+- within the step's `--timeout`, which covers setup and Claude together.
+
+Each step runs on a fresh VM, so the script runs again every time; write it so a second run does no harm. Things it installs under your home directory aren't on Claude's `PATH` by itself: append shell assignments to the file named by `$CTRANSFER_SETUP_ENV`, and Claude starts with them:
+
+```bash
+echo 'PATH="$HOME/miniforge3/envs/myapp/bin:$PATH"' >> "$CTRANSFER_SETUP_ENV"
+```
+
+`task show` and `cron logs` show how long setup took. If the script fails or runs out of time, Claude doesn't start: the step ends as `error`, and they show the end of the script's output. Sessions you push or start with `new` don't run the script: you're there to run it yourself (`bash .ctransfer/setup.sh`) if the session needs it, and Claude starts without waiting for it.
+
 ## Automation (service tokens)
 
 `ctransfer login` needs you at a browser to enter a code. To use ctransfer from CI, a script, a server or an agent, create a service token once and give it to that machine:

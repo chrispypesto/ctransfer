@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ctransfer import agent, bundle, sessions
+from ctransfer import agent, bundle, cli, sessions
 from tests.conftest import add_replies, make_repo, run_git
 
 BOOT = {"transfer_id": "t1", "agent_url": "https://agent.example/", "agent_token": "tok", "claude_token": "sk-ant-oat-x"}
@@ -327,7 +327,8 @@ def restore_on_vm(tmp_path: Path, monkeypatch, vm: str, boot: dict, bundle_dir: 
 def run_headless_turn(tmp_path: Path, vm_home: Path, state: dict, reply: str, *, limit_resets_at: int | None = None) -> list[str]:
     """Runs the launcher the agent wrote against a stand-in claude that appends a turn to the session's transcript
     and answers like `claude -p --output-format stream-json --verbose` (message lines as claude 2.1.296 writes them,
-    the result last). limit_resets_at: claude stops on the usage limit instead. Returns the argv claude got."""
+    the result last). limit_resets_at: claude stops on the usage limit instead. Returns the argv claude got; the
+    environment it got is in tmp_path/env.json."""
     transcript = Path(state["claude_home"]) / "projects" / state["project_dir"] / f"{state['session_id']}.jsonl"
     sid = state["session_id"]
     if limit_resets_at is None:
@@ -349,9 +350,16 @@ def run_headless_turn(tmp_path: Path, vm_home: Path, state: dict, reply: str, *,
                     f"with t.open('a') as f: f.write(json.dumps({{'type': 'user', 'sessionId': {sid!r}, "
                     "'message': {'content': sys.argv[2]}}) + '\\n')\n"
                     f"pathlib.Path({str(tmp_path / 'argv.json')!r}).write_text(json.dumps(sys.argv[1:]))\n"
+                    f"import os; pathlib.Path({str(tmp_path / 'env.json')!r}).write_text(json.dumps(dict(os.environ)))\n"
                     f"for line in {lines!r}: print(json.dumps(line))\n"
                     f"sys.exit({1 if limit_resets_at else 0})\n")
     stub.chmod(0o755)
+    run_launcher(tmp_path, vm_home)
+    return json.loads((tmp_path / "argv.json").read_text())
+
+
+def run_launcher(tmp_path: Path, vm_home: Path) -> None:
+    """Runs the launcher the agent wrote, as tmux would on the VM."""
     shim = tmp_path / "coreutils" / "timeout"  # Ubuntu's coreutils timeout, which macOS lacks: drop the limits, run
     if not shim.exists():
         shim.parent.mkdir()
@@ -359,7 +367,6 @@ def run_headless_turn(tmp_path: Path, vm_home: Path, state: dict, reply: str, *,
         shim.chmod(0o755)
     subprocess.run(["bash", str(vm_home / ".ctransfer" / "launch.sh")],
                    env={"HOME": str(vm_home), "PATH": f"{shim.parent}:/usr/bin:/bin"}, check=True)
-    return json.loads((tmp_path / "argv.json").read_text())
 
 
 def export_from_vm(tmp_path: Path, state: dict, name: str) -> tuple[Path, dict]:
@@ -435,6 +442,70 @@ def test_a_task_whose_repo_cannot_be_cloned_ends_at_once_saying_why(tmp_path, mo
     result = report["result"]
     assert result["exit_code"] == 1 and result["error"].startswith("couldn't clone example/private at main: ")
     assert "ctransfer secret set GH_TOKEN" in result["error"]  # no GitHub token stored: say how to add one
+
+
+def repo_with_setup(root: Path, script: str) -> Path:
+    src = make_repo(root)
+    (src / ".ctransfer").mkdir()
+    (src / ".ctransfer" / "setup.sh").write_text(script)
+    run_git(src, "add", "-A")
+    run_git(src, "commit", "-q", "-m", "setup script")
+    return src
+
+
+def test_a_repos_setup_script_runs_before_claude_with_the_secrets_and_hands_claude_its_environment(tmp_path, monkeypatch):
+    """The repo's .ctransfer/setup.sh installs what it needs before claude starts: it runs in the repo root with the
+    user's secrets, and what it appends to $CTRANSFER_SETUP_ENV (here a tool directory on PATH) reaches claude."""
+    src = repo_with_setup(tmp_path / "src" / "repo", (
+        'echo "installing tools, API key of ${#MY_API_KEY} chars"\n'
+        'pwd > "$HOME/setup-cwd"\n'
+        'mkdir -p "$HOME/tools/bin"\n'
+        'echo \'PATH="$HOME/tools/bin:$PATH"\' >> "$CTRANSFER_SETUP_ENV"\n'
+        'echo REPO_TOOLS=ready >> "$CTRANSFER_SETUP_ENV"\n'))
+    path = str(tmp_path / "vm-fs" / "repo")
+    run = {"prompt": "run the tests", "note": "n", "timeout_sec": 600, "permission_mode": "default",
+           "repo": {"name": "example/repo", "url": str(src), "ref": "", "path": path}}
+    boot = {**task_boot(run), "secrets": {"MY_API_KEY": "k-123"}}
+    vm_home, state = restore_on_vm(tmp_path, monkeypatch, "vm", boot, tmp_path / "vm" / "bundle")
+    run_headless_turn(tmp_path, vm_home, state, "tests pass")
+    assert (vm_home / "setup-cwd").read_text().strip() == path
+    env = json.loads((tmp_path / "env.json").read_text())
+    assert env["PATH"].startswith(f"{vm_home}/tools/bin:") and env["REPO_TOOLS"] == "ready"
+    assert env["MY_API_KEY"] == "k-123"
+    _, report = export_from_vm(tmp_path, state, "step1")
+    result = report["result"]
+    assert result["exit_code"] == 0 and result["text"] == "tests pass" and "error" not in result
+    assert result["setup"]["exit_code"] == 0 and result["setup"]["seconds"] >= 0
+    assert result["setup"]["output"] == "installing tools, API key of 5 chars\n"
+
+
+def test_a_failing_setup_script_ends_the_run_before_claude_starts_and_reports_its_output(tmp_path, monkeypatch):
+    src = repo_with_setup(tmp_path / "src" / "repo", 'for i in $(seq 1 5000); do echo "step $i"; done\n'
+                                                     'echo "conda: no space left on device" >&2\nexit 3\n')
+    path = str(tmp_path / "vm-fs" / "repo")
+    run = {"prompt": "run the tests", "note": "n", "timeout_sec": 600, "permission_mode": "default",
+           "repo": {"name": "example/repo", "url": str(src), "ref": "", "path": path}}
+    vm_home, state = restore_on_vm(tmp_path, monkeypatch, "vm", task_boot(run), tmp_path / "vm" / "bundle")
+    stub = vm_home / ".local" / "bin" / "claude"
+    stub.parent.mkdir(parents=True)
+    stub.write_text(f"#!/bin/bash\ntouch {tmp_path / 'claude-ran'}\n")
+    stub.chmod(0o755)
+    run_launcher(tmp_path, vm_home)
+    assert not (tmp_path / "claude-ran").exists()
+    _, report = export_from_vm(tmp_path, state, "step1")
+    result = report["result"]
+    assert result["exit_code"] == 1
+    assert result["error"].startswith("the repo's setup script .ctransfer/setup.sh failed with exit code 3 after ")
+    assert result["error"].endswith(" s, so Claude didn't start")
+    assert result["setup"]["exit_code"] == 3
+    output = result["setup"]["output"]
+    assert len(output) == agent.SETUP_OUTPUT_MAX and output.endswith("step 5000\nconda: no space left on device\n")
+    # What `ctransfer task show` prints of it: the reason, then the end of the script's output.
+    shown = cli._task_text({"task_id": "task1", "repo": "example/repo", "status": "error", "session_id": TASK_SID,
+                            "permission_mode": "default", "steps": [{"step": 1, "status": "error", "prompt": "x",
+                                                                     "result": result}]})
+    assert f"  ({result['error']})\n  setup output (last lines):\n" in shown
+    assert shown.endswith("    step 4999\n    step 5000\n    conda: no space left on device")
 
 
 def test_a_run_that_stops_on_the_usage_limit_reports_when_the_limit_resets(tmp_path, monkeypatch):
