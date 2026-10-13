@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ctransfer import agent, bundle, sessions
-from tests.conftest import add_replies, run_git
+from tests.conftest import add_replies, make_repo, run_git
 
 BOOT = {"transfer_id": "t1", "agent_url": "https://agent.example/", "agent_token": "tok", "claude_token": "sk-ant-oat-x"}
 
@@ -292,3 +292,129 @@ def test_a_claude_cli_already_on_the_vm_is_recognized(tmp_path):
     binary.write_text("#!/bin/sh\necho '2.1.296 (Claude Code)'\n")
     binary.chmod(0o755)
     assert agent.installed_claude_version(home, None) == "2.1.296"
+
+
+TASK_SID = "7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+
+
+def task_boot(run: dict) -> dict:
+    return {**BOOT, "agent_url": "", "session_id": TASK_SID, "claude_version": "latest", "run": run}
+
+
+def restore_on_vm(tmp_path: Path, monkeypatch, vm: str, boot: dict, bundle_dir: Path) -> tuple[Path, dict]:
+    """`agent restore --manual` on a fresh VM (its home under tmp_path/vm); only the Claude installer, apt and tmux
+    are intercepted. Returns (vm home, the agent's state)."""
+    vm_home = tmp_path / vm / "home"
+    vm_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(vm_home))
+    boot_file = tmp_path / vm / "boot.json"
+    boot_file.write_text(json.dumps(boot))
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    real_run = subprocess.run
+
+    def intercept(cmd, **kw):
+        if any(x in cmd[-1] for x in ("install.sh", "tmux ", "apt-get")):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(agent.subprocess, "run", intercept)
+    agent.main(["restore", "--boot", str(boot_file), "--bundle-dir", str(bundle_dir), "--user", "",
+                "--state", str(tmp_path / vm / "state.json"), "--manual"])
+    monkeypatch.setattr(agent.subprocess, "run", real_run)
+    return vm_home, json.loads((tmp_path / vm / "state.json").read_text())
+
+
+def run_headless_turn(tmp_path: Path, vm_home: Path, state: dict, reply: str) -> list[str]:
+    """Runs the launcher the agent wrote against a stand-in claude that appends a turn to the session's transcript
+    and answers like `claude -p --output-format json`. Returns the argv claude got."""
+    transcript = Path(state["claude_home"]) / "projects" / state["project_dir"] / f"{state['session_id']}.jsonl"
+    stub = vm_home / ".local" / "bin" / "claude"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    stub.write_text(f"#!{sys.executable}\nimport json, pathlib, sys\n"
+                    f"t = pathlib.Path({str(transcript)!r}); t.parent.mkdir(parents=True, exist_ok=True)\n"
+                    f"with t.open('a') as f: f.write(json.dumps({{'type': 'user', 'sessionId': {state['session_id']!r}, "
+                    "'message': {'content': sys.argv[2]}}) + '\\n')\n"
+                    f"print(json.dumps({{'session_id': {state['session_id']!r}, 'result': {reply!r}, 'is_error': False, "
+                    "'num_turns': 2, 'argv': sys.argv[1:]}))\n")
+    stub.chmod(0o755)
+    shim = tmp_path / "coreutils" / "timeout"  # Ubuntu's coreutils timeout, which macOS lacks: drop the limits, run
+    if not shim.exists():
+        shim.parent.mkdir()
+        shim.write_text('#!/bin/bash\nwhile [[ $1 == -* ]]; do shift; done\nshift\nexec "$@"\n')
+        shim.chmod(0o755)
+    subprocess.run(["bash", str(vm_home / ".ctransfer" / "launch.sh")],
+                   env={"HOME": str(vm_home), "PATH": f"{shim.parent}:/usr/bin:/bin"}, check=True)
+    return json.loads((vm_home / ".ctransfer" / "run" / "result.json").read_text())["argv"]
+
+
+def export_from_vm(tmp_path: Path, state: dict, name: str) -> tuple[Path, dict]:
+    """The agent's export once the control plane asks for it. Returns (the uploaded bundle, what it reported)."""
+    reported, uploaded = {}, tmp_path / f"{name}.tgz"
+    vm_agent = agent.Agent(state, poster=lambda route, body: reported.update({route: body}) or {},
+                           uploader=lambda form, path: shutil.copy(path, uploaded), stopper=lambda: None)
+    assert vm_agent.status() == "done"
+    vm_agent.export({}, "export-key")
+    return uploaded, reported["exported"]
+
+
+def test_a_task_clones_its_repo_at_the_ref_and_a_follow_up_resumes_the_same_session(tmp_path, monkeypatch):
+    """A task's first step has no bundle: the VM clones the repo at the ref and starts a new session under the
+    given id. A follow-up boots from that step's export and resumes the same session (no fork), with the workspace
+    as the step left it, uncommitted changes included."""
+    src = make_repo(tmp_path / "src" / "repo")
+    run_git(src, "checkout", "-q", "-b", "feature")
+    (src / "feature.txt").write_text("on the feature branch\n")
+    run_git(src, "add", "feature.txt")
+    run_git(src, "commit", "-q", "-m", "feature")
+    upstream = tmp_path / "github" / "example" / "repo.git"  # stands in for https://github.com/example/repo.git
+    run_git(tmp_path, "clone", "-q", "--bare", str(src), str(upstream))
+    path = str(tmp_path / "vm-fs" / "repo")  # where the control plane puts the clone
+    identity = {"name": "alice", "email": "1+alice@users.noreply.github.com"}
+    first = {"prompt": "fix the bug", "note": "task note", "timeout_sec": 600, "permission_mode": "acceptEdits",
+             "identity": identity, "repo": {"name": "example/repo", "url": str(upstream), "ref": "feature", "path": path}}
+    assert "task" in agent.FEATURES
+
+    vm_home, state = restore_on_vm(tmp_path, monkeypatch, "vm1", task_boot(first), tmp_path / "vm1" / "bundle")
+    assert state["session_id"] == TASK_SID and state["cwd"] == path
+    assert state["workspace_update"] == "cloned example/repo at feature"
+    assert (Path(path) / "feature.txt").exists() and run_git(path, "branch", "--show-current") == "feature"
+    assert run_git(path, "config", "user.email") == identity["email"]
+    argv = run_headless_turn(tmp_path, vm_home, state, "fixed it")
+    assert argv[:4] == ["-p", "task note\n\nThe task:\nfix the bug", "--session-id", TASK_SID]
+    assert "--resume" not in argv and "--fork-session" not in argv
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    (Path(path) / "app.py").write_text("print('fixed, not committed')\n")  # what claude left on the VM
+
+    uploaded, report = export_from_vm(tmp_path, state, "step1")
+    assert report["result"]["text"] == "fixed it" and report["result"]["session_id"] == TASK_SID
+    assert report["result"]["workspace_update"] == "cloned example/repo at feature"
+
+    shutil.rmtree(path)  # the follow-up runs on another VM
+    bundle.extract(uploaded, tmp_path / "vm2" / "bundle")
+    follow_up = {"prompt": "address the review", "note": "follow-up note", "timeout_sec": 600,
+                 "permission_mode": "acceptEdits", "continue": True}
+    vm_home, state = restore_on_vm(tmp_path, monkeypatch, "vm2", task_boot(follow_up), tmp_path / "vm2" / "bundle")
+    assert state["session_id"] == TASK_SID and state["workspace_update"] == "kept as the last step left it"
+    assert (Path(path) / "app.py").read_text() == "print('fixed, not committed')\n"
+    assert run_git(path, "branch", "--show-current") == "feature" and run_git(path, "config", "user.name") == "alice"
+    transcript = Path(state["claude_home"]) / "projects" / state["project_dir"] / f"{TASK_SID}.jsonl"
+    assert "fix the bug" in transcript.read_text()  # the first turn came along
+    argv = run_headless_turn(tmp_path, vm_home, state, "addressed")
+    assert argv[:4] == ["-p", "follow-up note\n\nThe task:\naddress the review", "--resume", TASK_SID]
+    assert "--fork-session" not in argv and "--session-id" not in argv
+    _, report = export_from_vm(tmp_path, state, "step2")
+    assert report["result"]["session_id"] == TASK_SID
+    turns = [json.loads(line)["message"]["content"] for line in transcript.read_text().splitlines()]
+    assert ["fix the bug" in t for t in turns] == [True, False] and "address the review" in turns[1]
+
+
+def test_a_task_whose_repo_cannot_be_cloned_ends_at_once_saying_why(tmp_path, monkeypatch):
+    path = str(tmp_path / "vm-fs" / "repo")
+    run = {"prompt": "x", "note": "n", "timeout_sec": 600, "permission_mode": "default",
+           "repo": {"name": "example/private", "url": str(tmp_path / "missing.git"), "ref": "main", "path": path}}
+    vm_home, state = restore_on_vm(tmp_path, monkeypatch, "vm", task_boot(run), tmp_path / "vm" / "bundle")
+    assert not (vm_home / ".ctransfer" / "launch.sh").exists()  # claude never starts
+    _, report = export_from_vm(tmp_path, state, "step1")
+    result = report["result"]
+    assert result["exit_code"] == 1 and result["error"].startswith("couldn't clone example/private at main: ")
+    assert "ctransfer secret set GH_TOKEN" in result["error"]  # no GitHub token stored: say how to add one

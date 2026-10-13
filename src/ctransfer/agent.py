@@ -13,6 +13,11 @@ Scheduled runs (boot["run"] set, see `ctransfer cron`) start no interactive sess
 `claude -p` turn on a fork of the pushed session, after which the agent reports "done" and the
 control plane asks for the export, which carries the fork's transcript and the run's result.
 
+Tasks (boot["run"]["repo"] or ["continue"] set) are headless runs too, with no laptop bundle: a task's first step
+clones a GitHub repo at a ref and starts a fresh session under the control plane's session id; each follow-up boots
+from the previous step's export and resumes that same session (no fork), so its transcript and workspace, uncommitted
+changes included, carry on from step to step.
+
 Standard library only: this file ships inside every bundle and runs on a stock Ubuntu image.
 """
 
@@ -39,6 +44,10 @@ DETACH_HINT = " Ctrl-b then d: detach, claude keeps running "
 HEARTBEAT_SEC = 60
 EXPORT_WAIT_SEC = 1800
 RESULT_TEXT_MAX = 8000  # chars of the run's final message reported to the control plane
+# What this agent does beyond pushes, new sessions and scheduled runs. The control plane ships this package to task
+# VMs itself and reads FEATURES to tell whether it can.
+FEATURES = ("task",)
+CLONE_TIMEOUT_SEC = 900
 
 UNIT = """[Unit]
 Description=ctransfer session agent
@@ -94,6 +103,8 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
 
     root_prefix relocates the workspace (tests use it so the 'VM' doesn't collide with the laptop path).
     """
+    if (boot.get("run") or {}).get("repo"):
+        return _restore_task_start(boot, home=home, user=user, root_prefix=root_prefix, launch=launch)
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     sid, cwd = manifest["session_id"], manifest["cwd"]
     ws = manifest["workspace"]
@@ -135,11 +146,85 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
         if github:
             _install_gh()
         if boot.get("run"):
-            state["workspace_update"] = _update_workspace(state, ws)
+            # A task's follow-up carries on from exactly where the last step left the workspace.
+            state["workspace_update"] = ("kept as the last step left it" if boot["run"].get("continue")
+                                         else _update_workspace(state, ws))
             _launch_run(state, home, boot["run"])
         else:
             _launch(state, home, bool(boot.get("remote_control")), manifest.get("prompt"))
     return state
+
+
+def _restore_task_start(boot: dict, *, home: Path, user: str | None, root_prefix: str, launch: bool) -> dict:
+    """A task's first step, which has no bundle: clone the repo at the ref into run["repo"]["path"], then (with launch)
+    one headless turn of a new session under the control plane's session id. A clone that fails is reported as the
+    run's result, so the step ends at once instead of the VM timing out."""
+    run, claude_dir = boot["run"], home / ".claude"
+    repo = run["repo"]
+    path = repo["path"]
+    vm_root = Path(root_prefix + path)
+    claude_dir.mkdir(exist_ok=True)
+    state = {
+        "transfer_id": boot["transfer_id"], "session_id": boot["session_id"], "agent_url": boot["agent_url"],
+        "agent_token": boot["agent_token"], "cwd": path, "vm_cwd": str(vm_root), "root": path, "vm_root": str(vm_root),
+        "project_dir": sessions.encode_project_dir(path), "claude_home": str(claude_dir), "user": user,
+        "restored_at": time.time(), "new": True, "run": run,
+    }
+    secrets = boot.get("secrets") or {}
+    _write_env(home, user, boot["claude_token"], secrets)  # git's credential helper reads the GitHub token from it
+    github = _setup_github(home, user, secrets)
+    created_top = _first_missing_ancestor(vm_root.parent)
+    vm_root.parent.mkdir(parents=True, exist_ok=True)
+    if user:
+        subprocess.run(["chown", "-R", f"{user}:{user}", str(created_top or vm_root.parent)], check=True)
+    problem = _clone(state, repo, github)
+    if problem is None:
+        for key, value in (run.get("identity") or {}).items():  # commits made on the VM carry the user's name
+            subprocess.run(["git", "-C", str(vm_root), "config", f"user.{key}", value], check=True)
+    else:
+        vm_root.mkdir(parents=True, exist_ok=True)  # the export still needs a workspace to capture
+    state["workspace_update"] = f"cloned {repo['name']}" + (f" at {repo['ref']}" if repo.get("ref") else "")
+    _write_global_config(home / ".claude.json", [str(vm_root)], {}, root_prefix)
+    if user:
+        for p in (claude_dir, home / ".claude.json", vm_root):
+            subprocess.run(["chown", "-R", f"{user}:{user}", str(p)], check=True)
+    if problem is not None:
+        _fail_run(home, user, problem)
+    elif launch:
+        _install_claude(home, user, boot.get("claude_version"))
+        if github:
+            _install_gh()
+        _launch_run(state, home, run)
+    return state
+
+
+def _clone(state: dict, repo: dict, github: bool) -> str | None:
+    """Clones repo["url"] into the state's vm_root and checks out repo["ref"] (a branch, tag or commit; none: the
+    default branch). Returns why it failed, or None."""
+    root = shlex.quote(state["vm_root"])
+    cmd = f"GIT_TERMINAL_PROMPT=0 git clone --quiet {shlex.quote(repo['url'])} {root}"
+    if repo.get("ref"):
+        cmd += f" && git -C {root} checkout --quiet {shlex.quote(repo['ref'])}"
+    try:
+        out = subprocess.run(_as_user(state["user"], cmd), capture_output=True, text=True, timeout=CLONE_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        return f"couldn't clone {repo['name']}: it took more than {CLONE_TIMEOUT_SEC // 60} minutes"
+    if out.returncode == 0:
+        return None
+    reason = (out.stderr.strip().splitlines() or ["git failed"])[-1][:300]
+    hint = "" if github else (" If the repository is private, store a GitHub token for your cloud sessions first "
+                              "(`ctransfer secret set GH_TOKEN`).")
+    return f"couldn't clone {repo['name']}" + (f" at {repo['ref']}" if repo.get("ref") else "") + f": {reason}.{hint}"
+
+
+def _fail_run(home: Path, user: str | None, error: str) -> None:
+    """Ends a run before claude starts: the error and exit code are its result, so the agent reports done."""
+    out = run_dir(home)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "error").write_text(error)
+    (out / "exit_code").write_text("1\n")
+    if user:
+        subprocess.run(["chown", "-R", f"{user}:{user}", str(home / ".ctransfer")], check=True)
 
 
 def _write_env(home: Path, user: str | None, claude_token: str, secrets: dict[str, str]) -> None:
@@ -291,14 +376,20 @@ def run_prompt(run: dict) -> str:
 
 
 def _launch_run(state: dict, home: Path, run: dict) -> None:
-    """One headless turn on a fork of the pushed session: --fork-session writes the turn to a new transcript, so
-    the pushed one (every run's starting point) never grows. A coreutils timeout bounds the run."""
+    """One headless turn. A scheduled run's is on a fork of the pushed session: --fork-session writes the turn to a
+    new transcript, so the pushed one (every run's starting point) never grows. A task's first step starts its session
+    under the given id; a follow-up resumes that same session, so the task's turns stay one conversation. A coreutils
+    timeout bounds the run."""
     out = run_dir(home)
     out.mkdir(parents=True, exist_ok=True)
+    if run.get("repo"):
+        session = ["--session-id", state["session_id"]]
+    else:
+        session = ["--resume", state["session_id"], *([] if run.get("continue") else ["--fork-session"]),
+                   *sessions.model_args(transcript_path(state))]
     claude = " ".join([
         f"timeout --kill-after=30 {int(run['timeout_sec'])}", "\"$HOME/.local/bin/claude\"",
-        "-p", shlex.quote(run_prompt(run)), "--resume", state["session_id"], "--fork-session",
-        shlex.join(sessions.model_args(transcript_path(state))),
+        "-p", shlex.quote(run_prompt(run)), shlex.join(session),
         "--output-format", "json", "--permission-mode", shlex.quote(run.get("permission_mode") or "default")])
     launcher = _write_launcher(state, home,
                                f"{claude} > \"$HOME/.ctransfer/run/result.json\" 2> \"$HOME/.ctransfer/run/stderr.log\"\n"
@@ -338,6 +429,8 @@ def run_result(home: Path) -> dict:
             result[key] = reply[key]
     result["text"] = str(reply.get("result") or "")[:RESULT_TEXT_MAX]
     result["permission_denials"] = len(reply.get("permission_denials") or [])
+    if (out / "error").exists():  # the run ended before claude started, e.g. its repo couldn't be cloned
+        result["error"] = (out / "error").read_text()[:1000]
     if not reply or reply.get("is_error"):
         try:
             result["stderr"] = (out / "stderr.log").read_text()[-1000:]
