@@ -180,7 +180,9 @@ def _restore_task_start(boot: dict, *, home: Path, user: str | None, root_prefix
     problem = _clone(state, repo, github)
     if problem is None:
         for key, value in (run.get("identity") or {}).items():  # commits made on the VM carry the user's name
-            subprocess.run(["git", "-C", str(vm_root), "config", f"user.{key}", value], check=True)
+            # As the user, who owns the clone: git refuses root a repo another uid owns ("dubious ownership").
+            subprocess.run(_as_user(user, f"git -C {shlex.quote(str(vm_root))} config user.{key} {shlex.quote(value)}"),
+                           check=True)
     else:
         vm_root.mkdir(parents=True, exist_ok=True)  # the export still needs a workspace to capture
     state["workspace_update"] = f"cloned {repo['name']}" + (f" at {repo['ref']}" if repo.get("ref") else "")
