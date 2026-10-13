@@ -70,6 +70,8 @@ With a prompt, `push` starts the VM's `claude --resume` with it, so the session 
 
 `ssh` runs claude in tmux on the VM, and the tmux status bar shows how to detach. Quitting claude there (`/exit`) stops it on the VM; the session is still there to `pull`.
 
+A session brought home without `pull` (the service does this after a VM has been idle or running for long, or when your plan's limits are reached) waits in the cloud for you to `pull` it, but only for a limited time (see the [Privacy Policy](PRIVACY.md#retention)): `ctransfer ls` (KEPT UNTIL) and `ctransfer status <id>` show the date it is deleted.
+
 `push --current` targets the Claude Code session running the command. `push --when-idle --detach` waits for that session's turn to end in a background worker, which is what `/ctransfer` uses.
 
 `new` sends the workspace, your Claude config and the project's memory, but no transcript. The VM starts `claude --session-id <id>`, with the prompt if you gave one, and an appended system prompt saying how the session was started. `pull` brings it back like any pushed session. If nobody ever prompted it, `pull` brings back only the workspace.
