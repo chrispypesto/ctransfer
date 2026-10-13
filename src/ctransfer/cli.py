@@ -259,8 +259,9 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
         path = Path(tmp) / "export.tgz"
         net.get_file(item["download_url"], path)
         manifest = bundle.extract(path, Path(tmp) / "x")
+        pushed_ws = pushed["workspace"] if pushed else {}
         result = apply.apply_export(Path(tmp) / "x", manifest, home=home, force=force, as_fork=as_fork, stash=stash,
-                                    pushed_changes=pushed["workspace"].get("changes") if pushed else None)
+                                    pushed_changes=pushed_ws.get("changes"), pushed_files=pushed_ws.get("files"))
     api.call("DELETE", f"/sessions/{tid}")  # the server already tore the VM down at export; this is idempotent
     return result
 
@@ -275,6 +276,9 @@ def cmd_pull(args) -> None:
 def _report_pull(result: dict) -> None:
     if result["backup"]:
         _print(f"previous local state backed up to {result['backup']}")
+    if result.get("overwritten"):
+        _print(f"replaced your local edits to {', '.join(result['overwritten'])} with the cloud copy; your versions "
+               f"are in {Path(result['backup']) / 'workspace'}")
     if result.get("stash"):
         root, message = result["stash"]["root"], result["stash"]["message"]
         _print(f"your uncommitted changes in {root} were set aside as the git stash \"{message}\". To get them "
@@ -1082,7 +1086,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("pull", help="bring a cloud session back, overwriting the local copy")
     p.add_argument("transfer_id")
-    p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged")
+    p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged, and local edits in a folder that isn't a git repo (backed up first)")
     p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
     p.add_argument("--stash", action="store_true", help="set aside local changes made since the push as a git stash instead of refusing")
     p.set_defaults(fn=cmd_pull)
