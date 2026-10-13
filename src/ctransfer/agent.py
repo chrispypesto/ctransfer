@@ -6,7 +6,7 @@
 in tmux, and install a systemd unit for `run`.
 
 `run` (systemd): heartbeat the control plane with the session's busy/idle status; when an
-export is requested, wait for a turn boundary, stop claude, bundle the transcript + workspace
+export is requested, wait for a turn boundary (still heartbeating), stop claude, bundle the transcript + workspace
 and upload it.
 
 Scheduled runs (boot["run"] set, see `ctransfer cron`) start no interactive session: one headless
@@ -43,6 +43,7 @@ TMUX_SESSION = "claude"
 DETACH_HINT = " Ctrl-b then d: detach, claude keeps running "
 HEARTBEAT_SEC = 60
 EXPORT_WAIT_SEC = 1800
+EXPORT_POLL_SEC = 5  # how often a pending export checks whether the turn has ended
 RESULT_TEXT_MAX = 8000  # chars of the run's final message reported to the control plane
 # What this agent does beyond pushes, new sessions and scheduled runs. The control plane ships this package to task
 # VMs itself and reads FEATURES to tell whether it can.
@@ -512,9 +513,7 @@ class Agent:
         return resp
 
     def export(self, upload: dict, export_key: str) -> dict:
-        deadline = time.time() + EXPORT_WAIT_SEC
-        while self.status() == "busy" and time.time() < deadline:
-            self.sleep(5)
+        upload, export_key = self._wait_for_turn_end(upload, export_key)
         self.stop_claude()
         st = self.state
         home = Path(st["claude_home"])
@@ -540,6 +539,29 @@ class Agent:
         self.post("exported", {"export_key": export_key, **report,
                                "manifest": {k: manifest[k] for k in ("record_count", "last_uuid", "claude_version")}})
         return manifest
+
+    def _wait_for_turn_end(self, upload: dict, export_key: str) -> tuple[dict, str]:
+        """Wait up to EXPORT_WAIT_SEC for claude's current turn to end, still heartbeating every HEARTBEAT_SEC so the
+        control plane knows the VM is alive and busy rather than gone. Returns the latest upload form for the export
+        (each heartbeat's answer carries a fresh one, so a long wait doesn't leave us holding an expired form)."""
+        deadline = time.time() + EXPORT_WAIT_SEC
+        since_beat = 0
+        while time.time() < deadline:
+            status = self.status()
+            if status != "busy":
+                break
+            if since_beat >= HEARTBEAT_SEC:
+                since_beat = 0
+                try:
+                    resp = self.post("heartbeat", {"status": status})
+                except Exception as e:  # a missed beat mustn't abandon the export
+                    print(f"ctransfer agent: {e}", file=sys.stderr, flush=True)
+                else:
+                    if resp.get("export"):
+                        upload, export_key = resp["upload"], resp["export_key"]
+            self.sleep(EXPORT_POLL_SEC)
+            since_beat += EXPORT_POLL_SEC
+        return upload, export_key
 
     def run(self) -> None:
         while True:

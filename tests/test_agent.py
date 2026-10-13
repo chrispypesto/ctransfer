@@ -448,3 +448,26 @@ def test_a_run_that_stops_on_the_usage_limit_reports_when_the_limit_resets(tmp_p
     _, report = export_from_vm(tmp_path, state, "step1")
     assert report["result"]["usage_limit"] == {"resets_at": 1_800_018_000, "type": "five_hour"}
     assert report["result"]["is_error"] and report["result"]["text"] == "You've hit your limit"
+
+
+def test_an_export_waiting_on_a_long_turn_keeps_heartbeating_and_uploads_with_the_latest_form(laptop, tmp_path):
+    """Asked to export mid-turn, the agent waits for the turn to end; a turn can outlast the control plane's patience
+    for a silent VM, so the wait must keep reporting the VM busy, not go quiet."""
+    _, _, state = push_and_restore(laptop, tmp_path)
+    waited = []  # seconds the agent slept while the turn ran
+    turn_sec = 20 * 60
+    posted, uploads = [], []
+
+    def control_plane(route, body):  # the control plane's answers: keep exporting, with a fresh form each beat
+        posted.append((route, body))
+        return {"export": True, "upload": {"form": len(posted)}, "export_key": "export-key"}
+
+    vm_agent = agent.Agent(state, poster=control_plane, uploader=lambda form, path: uploads.append(form),
+                           status_fn=lambda: "busy" if sum(waited) < turn_sec else "idle",
+                           stopper=lambda: None, sleep=waited.append)
+    vm_agent.export({"form": 0}, "export-key")
+
+    beats = [body["status"] for route, body in posted if route == "heartbeat"]
+    assert beats == ["busy"] * (turn_sec // agent.HEARTBEAT_SEC - 1)  # one a minute while busy, none once idle
+    assert [route for route, _ in posted][-1] == "exported"
+    assert uploads == [{"form": len(beats)}]  # the last beat's form, not the one from before the wait
