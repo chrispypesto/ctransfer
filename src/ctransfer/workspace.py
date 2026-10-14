@@ -75,10 +75,19 @@ def capture(cwd, out_dir) -> dict:
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    where = locate(cwd)
+    if where["kind"] == "git":
+        return _capture_git(Path(where["root"]), out)
+    return _capture_tree(Path(where["root"]), out)
+
+
+def locate(cwd) -> dict:
+    """The workspace capture takes for cwd: {"kind": "git", "root": its repo's top level} for a git repo with a
+    commit, else {"kind": "tree", "root": cwd}."""
     root = _toplevel(cwd)
     if root and _try_git(root, "rev-parse", "--verify", "-q", "HEAD"):
-        return _capture_git(root, out)
-    return _capture_tree(Path(cwd), out)
+        return {"kind": "git", "root": str(root)}
+    return {"kind": "tree", "root": str(cwd)}
 
 
 def _capture_git(root: Path, out: Path) -> dict:

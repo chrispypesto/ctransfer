@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -107,13 +108,63 @@ def check_before_export(pushed: dict, *, home: Path | None = None, force: bool =
             raise ApplyError(workspace.tree_problem(ws["root"], edits))
 
 
-def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force: bool = False,
-                 as_fork: bool = False, stash: bool = False, workspace_too: bool = True,
-                 pushed_changes: str | None = None, pushed_files: dict | None = None) -> dict:
-    """Overwrite the local transcript, file-history, memory and workspace (unless not workspace_too) with the
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def pushed_copy(pushed: dict) -> dict:
+    """What the cloud copy of a session pushed from here must be (see check_manifest): the session, project dir
+    and workspace its push record (cli.write_push_record) names."""
+    ws = pushed["workspace"]
+    return {"session_id": pushed["session_id"], "project_dir": pushed["project_dir"],
+            "workspace": {"kind": ws["kind"], "root": ws["root"]}}
+
+
+def transfer_copy(transfer: dict) -> dict:
+    """What the cloud copy of a transfer with no push record here (pushed from another machine) must be: the
+    session and folder the transfer was created with, and the workspace a push of that folder from here would take.
+    The project dir isn't known: Claude Code names it after the folder, but not always the same way (long names are
+    shortened), so any plain name will do."""
+    return {"session_id": transfer["session_id"], "project_dir": None, "workspace": workspace.locate(transfer["cwd"])}
+
+
+def _plain_name(name) -> bool:
+    return isinstance(name, str) and name not in ("", ".", "..") and "/" not in name and "\\" not in name
+
+
+def check_manifest(manifest: dict, expect: dict) -> None:
+    """Refuse a cloud copy whose manifest doesn't match expect (pushed_copy or transfer_copy).
+
+    The VM writes the export's manifest, and pull writes where it says, so a compromised VM could otherwise point the
+    workspace at, say, the home folder. expect's session_id None (a scheduled run's fork, named on the VM) only
+    requires a session id; its project_dir None, a plain folder name under ~/.claude/projects; its workspace None,
+    that the workspace is not applied."""
+    want_sid = expect["session_id"]
+    sid = manifest.get("session_id")
+    if not (isinstance(sid, str) and SESSION_ID.fullmatch(sid)) or (want_sid is not None and sid != want_sid):
+        raise ApplyError(f"the cloud copy is of a different session ({sid!r}) than {want_sid or 'a session id'}; "
+                         "nothing was changed")
+    project_dir, want_dir = manifest.get("project_dir"), expect["project_dir"]
+    if not _plain_name(project_dir) or (want_dir is not None and project_dir != want_dir):
+        raise ApplyError(f"the cloud copy is of a different project ({project_dir!r}) than "
+                         f"{want_dir or 'a project folder'}; nothing was changed")
+    for name in manifest.get("extra_transcripts", []):
+        if not _plain_name(name) or not name.endswith(".jsonl"):
+            raise ApplyError(f"the cloud copy names a transcript outside its project ({name!r}); nothing was changed")
+    want_ws, ws = expect["workspace"], manifest.get("workspace") or {}
+    if want_ws is not None and (ws.get("kind"), ws.get("root")) != (want_ws["kind"], want_ws["root"]):
+        raise ApplyError(f"the cloud copy's workspace ({ws.get('kind')} at {ws.get('root')}) is not the one this "
+                         f"session uses here ({want_ws['kind']} at {want_ws['root']}); nothing was changed")
+
+
+def apply_export(bundle_dir, manifest: dict, *, expect: dict, home: Path | None = None, force: bool = False,
+                 as_fork: bool = False, stash: bool = False, pushed_changes: str | None = None,
+                 pushed_files: dict | None = None) -> dict:
+    """Overwrite the local transcript, file-history, memory and workspace (unless expect has none) with the
     cloud copy.
 
-    Every check runs before anything is written; the previous local state is backed up under
+    expect (pushed_copy or transfer_copy, never the manifest itself: the VM wrote it) is what the manifest must
+    name, see check_manifest; its workspace None leaves the workspace alone. Every check runs before anything is
+    written; the previous local state is backed up under
     ~/.claude/ctransfer-backups/<session>/<timestamp>/ and the old git HEAD under refs/ctransfer/backup/.
     pushed_changes is the fingerprint of the uncommitted work that was pushed (workspace.changes_digest): local
     changes matching it are replaced, not refused or stashed. For a non-git folder, pushed_files is the push's
@@ -125,6 +176,8 @@ def apply_export(bundle_dir, manifest: dict, *, home: Path | None = None, force:
     """
     bundle_dir = Path(bundle_dir)
     home = Path(home or sessions.claude_home())
+    check_manifest(manifest, expect)
+    workspace_too = expect["workspace"] is not None
     sid, project_dir = manifest["session_id"], manifest["project_dir"]
     src_proj = bundle_dir / "claude" / "projects" / project_dir
     remote_transcript = src_proj / f"{sid}.jsonl"
