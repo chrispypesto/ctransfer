@@ -266,8 +266,10 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
         net.get_file(item["download_url"], path)
         manifest = bundle.extract(path, Path(tmp) / "x")
         pushed_ws = pushed["workspace"] if pushed else {}
-        result = apply.apply_export(Path(tmp) / "x", manifest, home=home, force=force, as_fork=as_fork, stash=stash,
-                                    pushed_changes=pushed_ws.get("changes"), pushed_files=pushed_ws.get("files"))
+        expect = apply.pushed_copy(pushed) if pushed else apply.transfer_copy(item)
+        result = apply.apply_export(Path(tmp) / "x", manifest, expect=expect, home=home, force=force,
+                                    as_fork=as_fork, stash=stash, pushed_changes=pushed_ws.get("changes"),
+                                    pushed_files=pushed_ws.get("files"))
     api.call("DELETE", f"/sessions/{tid}")  # the server already tore the VM down at export; this is idempotent
     return result
 
@@ -872,7 +874,9 @@ def cmd_cron_pull(args) -> None:
         path = Path(tmp) / "export.tgz"
         net.get_file(item["download_url"], path)
         manifest = bundle.extract(path, Path(tmp) / "x")
-        result = apply.apply_export(Path(tmp) / "x", manifest, home=sessions.claude_home(), workspace_too=False)
+        # The run's turn is in a fork the VM named, so only the project is known here.
+        expect = {"session_id": None, "project_dir": sessions.encode_project_dir(item["cwd"]), "workspace": None}
+        result = apply.apply_export(Path(tmp) / "x", manifest, expect=expect, home=sessions.claude_home())
     _print(f"pulled run {args.run_id} as session {result['session_id']} (workspace untouched)\n"
            f"continue with:  claude --resume {result['session_id']}")
 
