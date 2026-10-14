@@ -121,9 +121,10 @@ def pushed_copy(pushed: dict) -> dict:
 
 def transfer_copy(transfer: dict) -> dict:
     """What the cloud copy of a transfer with no push record here (pushed from another machine) must be: the
-    session and folder the transfer was created with, and the workspace a push of that folder from here would take."""
-    return {"session_id": transfer["session_id"], "project_dir": sessions.encode_project_dir(transfer["cwd"]),
-            "workspace": workspace.locate(transfer["cwd"])}
+    session and folder the transfer was created with, and the workspace a push of that folder from here would take.
+    The project dir isn't known: Claude Code names it after the folder, but not always the same way (long names are
+    shortened), so any plain name will do."""
+    return {"session_id": transfer["session_id"], "project_dir": None, "workspace": workspace.locate(transfer["cwd"])}
 
 
 def _plain_name(name) -> bool:
@@ -135,15 +136,17 @@ def check_manifest(manifest: dict, expect: dict) -> None:
 
     The VM writes the export's manifest, and pull writes where it says, so a compromised VM could otherwise point the
     workspace at, say, the home folder. expect's session_id None (a scheduled run's fork, named on the VM) only
-    requires a session id; its workspace None, that the workspace is not applied."""
+    requires a session id; its project_dir None, a plain folder name under ~/.claude/projects; its workspace None,
+    that the workspace is not applied."""
     want_sid = expect["session_id"]
     sid = manifest.get("session_id")
     if not (isinstance(sid, str) and SESSION_ID.fullmatch(sid)) or (want_sid is not None and sid != want_sid):
         raise ApplyError(f"the cloud copy is of a different session ({sid!r}) than {want_sid or 'a session id'}; "
                          "nothing was changed")
-    if manifest.get("project_dir") != expect["project_dir"] or not _plain_name(expect["project_dir"]):
-        raise ApplyError(f"the cloud copy is of a different project ({manifest.get('project_dir')!r}) than "
-                         f"{expect['project_dir']}; nothing was changed")
+    project_dir, want_dir = manifest.get("project_dir"), expect["project_dir"]
+    if not _plain_name(project_dir) or (want_dir is not None and project_dir != want_dir):
+        raise ApplyError(f"the cloud copy is of a different project ({project_dir!r}) than "
+                         f"{want_dir or 'a project folder'}; nothing was changed")
     for name in manifest.get("extra_transcripts", []):
         if not _plain_name(name) or not name.endswith(".jsonl"):
             raise ApplyError(f"the cloud copy names a transcript outside its project ({name!r}); nothing was changed")

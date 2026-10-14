@@ -333,6 +333,30 @@ def test_pull_refuses_a_cloud_copy_naming_a_transcript_outside_its_project(tmp_p
     assert not (home / "projects").exists()
 
 
+def test_pull_from_another_machine_takes_any_plain_project_dir(tmp_path):
+    """Without a push record the project dir isn't known: Claude Code shortens long ones, so it can differ from the
+    folder's encoded path. A plain name is enough to keep the write under ~/.claude/projects."""
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    (vm_folder / "new.txt").write_text("made on the vm\n")
+    manifest = export()
+    manifest["project_dir"] = "-shortened-by-claude-code-1a2b3c"
+    apply.apply_export(tmp_path / "x", manifest, home=home,
+                       expect=apply.transfer_copy({"session_id": pushed["session_id"], "cwd": str(folder)}))
+    assert (folder / "new.txt").read_text() == "made on the vm\n"
+
+
+def test_cron_pull_takes_the_fork_the_run_named_but_only_a_session_id(tmp_path):
+    """A scheduled run's turn is in a fork named on the VM: any session id is taken, a path is not."""
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    cron = {"session_id": None, "project_dir": None, "workspace": None}
+    manifest = export()
+    manifest["session_id"] = "0f1d2c3b-0a9e-4b8c-8d7f-1e2a3b4c5d6e"
+    assert apply.apply_export(tmp_path / "x", manifest, home=home, expect=cron)["transcript"] is None
+    manifest["session_id"] = "../../../evil"
+    with pytest.raises(apply.ApplyError, match="different session"):
+        apply.apply_export(tmp_path / "x", manifest, home=home, expect=cron)
+
+
 def test_push_of_a_plain_folder_with_a_fifo_and_a_socket(tmp_path):
     folder = tmp_path / "plain"
     folder.mkdir()

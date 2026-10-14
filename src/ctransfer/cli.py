@@ -874,8 +874,8 @@ def cmd_cron_pull(args) -> None:
         path = Path(tmp) / "export.tgz"
         net.get_file(item["download_url"], path)
         manifest = bundle.extract(path, Path(tmp) / "x")
-        # The run's turn is in a fork the VM named, so only the project is known here.
-        expect = {"session_id": None, "project_dir": sessions.encode_project_dir(item["cwd"]), "workspace": None}
+        # The run's turn is in a fork the VM named; the project dir isn't known here either (see transfer_copy).
+        expect = {"session_id": None, "project_dir": None, "workspace": None}
         result = apply.apply_export(Path(tmp) / "x", manifest, expect=expect, home=sessions.claude_home())
     _print(f"pulled run {args.run_id} as session {result['session_id']} (workspace untouched)\n"
            f"continue with:  claude --resume {result['session_id']}")
