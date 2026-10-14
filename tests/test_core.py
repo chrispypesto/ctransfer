@@ -333,6 +333,35 @@ def test_pull_refuses_a_cloud_copy_naming_a_transcript_outside_its_project(tmp_p
     assert not (home / "projects").exists()
 
 
+def _files(root: Path) -> dict:
+    return {str(f.relative_to(root)): f.read_bytes() for f in sorted(root.rglob("*")) if f.is_file()}
+
+
+@pytest.mark.parametrize("tamper, refusal", [
+    (lambda m, home: m["workspace"].update(root=str(home.parent)), "workspace .* is not the one"),
+    (lambda m, home: m["workspace"].update(kind="git"), "workspace .* is not the one"),
+    (lambda m, home: m.update(session_id="0f1d2c3b-0a9e-4b8c-8d7f-1e2a3b4c5d6e"), "different session"),
+    (lambda m, home: m.update(session_id="../../evil"), "different session"),
+    (lambda m, home: m.update(project_dir="../.."), "different project"),
+])
+@pytest.mark.parametrize("pushed_here", [True, False])
+def test_pull_refuses_a_cloud_copy_whose_manifest_was_tampered_with(tmp_path, tamper, refusal, pushed_here):
+    """The VM writes the manifest, so pull checks it against the push record (pushed here) or the transfer (pushed
+    from another machine) and refuses, before writing anything, one that names another place to write."""
+    folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path)
+    (vm_folder / "plan.txt").write_text("v2 from the vm\n")
+    manifest = export()
+    tamper(manifest, home)
+    expect = (apply.pushed_copy(pushed) if pushed_here
+              else apply.transfer_copy({"session_id": pushed["session_id"], "cwd": str(folder)}))
+    before = _files(home.parent)
+
+    with pytest.raises(apply.ApplyError, match=refusal):
+        apply.apply_export(tmp_path / "x", manifest, home=home, expect=expect,
+                           pushed_files=pushed["workspace"]["files"] if pushed_here else None)
+    assert _files(home.parent) == before
+
+
 def test_pull_from_another_machine_takes_any_plain_project_dir(tmp_path):
     """Without a push record the project dir isn't known: Claude Code shortens long ones, so it can differ from the
     folder's encoded path. A plain name is enough to keep the write under ~/.claude/projects."""
