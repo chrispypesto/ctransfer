@@ -117,6 +117,7 @@ def restore(boot: dict, bundle_dir: Path, *, home: Path, user: str | None = None
     ws = manifest["workspace"]
     claude_dir = home / ".claude"
 
+    claude_dir.mkdir(exist_ok=True)  # an empty laptop ~/.claude sends no claude/ folder, and the chown below needs it
     _merge_tree(bundle_dir / "claude", claude_dir)
     vm_root = Path(root_prefix + ws["root"])
     vm_cwd = root_prefix + cwd
