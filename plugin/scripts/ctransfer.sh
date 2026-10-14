@@ -7,7 +7,7 @@ bin="${CTRANSFER_BIN:-}"
 [ -z "$bin" ] && bin="$(command -v ctransfer 2>/dev/null)"
 if [ -z "$bin" ]; then
   cat <<'MSG'
-ctransfer CLI not found. Install it into any Python 3.10+ environment, then retry /ctransfer:
+ctransfer CLI not found. Install it into any Python 3.11+ environment, then retry /ctransfer:
   pip install "git+https://github.com/chrispypesto/ctransfer.git"   # or pipx / uv tool install
   ctransfer login
 Claude Code finds it on PATH, or at $CTRANSFER_BIN (path to the ctransfer executable).

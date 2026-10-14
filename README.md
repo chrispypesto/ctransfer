@@ -6,7 +6,7 @@ This repo has the client (the `ctransfer` CLI and the agent it ships to the VM) 
 
 ## Install
 
-Into any Python 3.10+ environment (venv, pipx, uv, conda, …):
+Into any Python 3.11+ environment (venv, pipx, uv, conda, …):
 
 ```bash
 pip install "git+https://github.com/chrispypesto/ctransfer.git"
@@ -210,7 +210,7 @@ Using the hosted service means agreeing to the [Terms of Use](https://ctransfer.
 ## Development
 
 ```bash
-pip install -e '.[test]'     # any Python 3.10+ env; environment.yml is the conda equivalent
+pip install -e '.[test]'     # any Python 3.11+ env; environment.yml is the conda equivalent
 make test
 claude --plugin-dir plugin   # try the plugin from this checkout
 make install-plugin          # or install it from this checkout; edits apply on /reload-plugins
