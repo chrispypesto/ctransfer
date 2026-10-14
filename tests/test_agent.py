@@ -129,6 +129,24 @@ def test_manual_restore_of_a_new_session_starts_claude_fresh_with_the_prompt(lap
     assert argv[-1] == prompt
 
 
+def test_a_new_session_from_an_empty_claude_home_restores_with_a_claude_home_on_the_vm(tmp_path):
+    """A fresh install has no ~/.claude files, so the bundle has no claude/ folder; the VM must still get ~/.claude
+    (the restore chowns it to the VM user)."""
+    repo = make_repo(tmp_path / "laptop" / "src" / "my_proj")
+    empty_home = tmp_path / "laptop" / ".claude"
+    empty_home.mkdir(parents=True)
+    b = tmp_path / "new.tgz"
+    bundle.build(b, kind="new", home=empty_home, session_id="0b9e3c1a-5f8e-4c2a-9d71-3f2a6b8e1c44",
+                 project_dir=sessions.encode_project_dir(str(repo)), cwd=str(repo), include_config=True,
+                 include_agent=True)
+    bundle.extract(b, tmp_path / "bundle")
+    assert not (tmp_path / "bundle" / "claude").exists()
+    vm_home = tmp_path / "vm" / "home"
+    vm_home.mkdir(parents=True)
+    state = agent.restore(BOOT, tmp_path / "bundle", home=vm_home, root_prefix=str(tmp_path / "vm" / "fs"), launch=False)
+    assert (vm_home / ".claude").is_dir() and state["claude_home"] == str(vm_home / ".claude")
+
+
 def test_scheduled_run_forks_the_session_headlessly_and_reports_its_result(laptop, tmp_path, monkeypatch):
     """A cron run's restore: the branch fast-forwards from its upstream, then the launcher runs one headless,
     forked, time-limited turn (against a stand-in claude) whose JSON result the agent reports."""
