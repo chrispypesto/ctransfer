@@ -121,16 +121,38 @@ def capture(cwd, out_dir) -> dict:
     return _capture_tree(Path(where["root"]), out)
 
 
+def _identity(path: Path) -> tuple[int, int] | None:
+    """Which folder path is (device, inode), None if there is nothing there."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino
+
+
 def root_refusal(root) -> str | None:
     """Why root can't be a workspace that push reads or pull writes, None if it can: the home folder, a folder
     containing it (such as /), or a hidden folder in it (~/.ssh, ~/.config/x), where files run at login or hold
-    credentials."""
+    credentials. Folders are compared by identity, not by name: on a case-insensitive file system (macOS)
+    /users/ALICE is the home folder too."""
     home = Path(os.path.realpath(Path.home()))
+    home_id = _identity(home)
+    above_home = {_identity(p) for p in home.parents} - {None}
     real = Path(os.path.realpath(root))
-    if real == home or real in home.parents:
-        return f"{root} is your home folder or contains it"
-    if home in real.parents and any(part.startswith(".") for part in real.relative_to(home).parts):
-        return f"{root} is a hidden folder in your home folder, where files can run commands or hold credentials"
+    for p in [real, *real.parents]:
+        ident = _identity(p)
+        if ident is None:
+            continue
+        if ident == home_id or p == home:
+            below = real.parts[len(p.parts):]
+            if not below:
+                return f"{root} is your home folder or contains it"
+            if any(part.startswith(".") for part in below):
+                return (f"{root} is a hidden folder in your home folder, where files can run commands or hold "
+                        "credentials")
+            return None
+        if p == real and (ident in above_home or real in home.parents):
+            return f"{root} is your home folder or contains it"
     return None
 
 

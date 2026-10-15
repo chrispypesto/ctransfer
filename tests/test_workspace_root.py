@@ -2,6 +2,7 @@
 it; and, for a session with no push record here, only a folder the user confirmed."""
 
 import io
+import os
 import sys
 
 import pytest
@@ -166,3 +167,19 @@ def test_pull_writes_only_to_the_folder_confirmed_before_the_export(tmp_path, ho
     with pytest.raises(apply.ApplyError, match=rf"workspace \(tree at {other}\) is not the one .*\(tree at {proj}\)"):
         cli.pull(service, "t1", home=home / ".claude", workspace_dir=str(proj), sleep=lambda s: None)
     assert list(other.iterdir()) == [] and list(proj.iterdir()) == []
+
+
+@pytest.mark.parametrize("named", ["HOME", "HOME/.ssh", "HOME/src/.cache"])
+def test_home_named_another_way_is_still_the_home_folder(tmp_path, home, monkeypatch, named):
+    """On a case-insensitive file system (macOS) a service can name the home folder in other letters: compared by
+    identity, it is still refused. The file system is made case-insensitive for "HOME" here."""
+    (home / ".ssh").mkdir()
+    (home / "src" / ".cache").mkdir(parents=True)
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        return real_stat(str(path).replace(f"{home.parent}/HOME", str(home)), *args, **kwargs)
+    monkeypatch.setattr(os, "stat", stat)
+    alias = f"{home.parent}/{named}"
+    with pytest.raises(apply.ApplyError, match="home folder"):
+        cli.confirm_destination("t1", alias, alias)
