@@ -381,3 +381,26 @@ def test_pull_refuses_untracked_files_that_clash_with_what_the_checkout_makes(tm
         _pull(tmp_path, manifest, home, pushed)
     assert _work_tree_and_config(repo) == before
     assert run_git(repo, "log", "-1", "--format=%s") == "ignore"
+
+
+@pytest.mark.parametrize("tracked, link, member", [
+    ("cfg/x", None, _file("CFG", b"x")), ("cfg/x", None, _file("CFG/x", b"x")), (None, "docs", _file("SUB/x", b"x")),
+])
+def test_clash_checks_ignore_case_like_a_mac(tmp_path, tracked, link, member):
+    """On a case-insensitive file system (macOS) CFG is cfg and SUB is sub: the clash checks compare that way."""
+    repo, home, pushed, vm_repo, export = _git_round(tmp_path)
+    if tracked:
+        (vm_repo / "cfg").mkdir()
+        (vm_repo / tracked).write_text("tracked\n")
+    else:
+        (vm_repo / "docs").mkdir()
+        (vm_repo / "docs" / "a.md").write_text("a\n")
+        os.symlink(link, vm_repo / "sub")
+    run_git(vm_repo, "add", "-A")
+    run_git(vm_repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "tracked")
+    manifest = export()
+    _add_to_tar(tmp_path / "x" / "workspace" / "untracked.tar", member)
+    before = _work_tree_and_config(repo)
+    with pytest.raises(apply.ApplyError, match=r"clashes with a path the cloud copy tracks in git"):
+        _pull(tmp_path, manifest, home, pushed)
+    assert _work_tree_and_config(repo) == before

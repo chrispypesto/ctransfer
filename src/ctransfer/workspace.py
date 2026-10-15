@@ -44,6 +44,17 @@ def _name_key(part: str) -> str:
     return part.translate(_IGNORED_IN_NAMES).casefold().rstrip(". ")
 
 
+def _path_key(path: str) -> str:
+    """A path as a case-insensitive file system sees it (see _name_key), to compare paths by."""
+    return "/".join(_name_key(part) for part in path.split("/"))
+
+
+def _ancestors(path: str) -> list[str]:
+    """The folders path is in: a/b/c -> [a, a/b]."""
+    parts = path.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
 def is_git_path(path: str) -> bool:
     """Whether path is in (or is) a .git folder: git's own files (config, hooks), which can run commands."""
     return any(_name_key(part) in (".git", "git~1") for part in path.split("/"))
@@ -311,23 +322,26 @@ def _entries(tf: tarfile.TarFile, tracked: frozenset[str] = frozenset()) -> tupl
     archive. tracked are the paths git tracks in the cloud copy (files and links the checkout makes): a member at
     one, under one, or a non-folder at one of their folders is refused too (git never lists such untracked files),
     so it can't clash with the checkout after it ran. Returns the entries and why each refused member is refused."""
+    # Compared by _path_key: on a case-insensitive file system CFG and cfg are the same path.
     entries: dict[str, _Entry] = {}
+    seen: set[str] = set()
     links: set[str] = set()
-    tracked_dirs = {posixpath.dirname(path) for path in tracked}
-    tracked_dirs |= {posixpath.join(*d.split("/")[:i]) for d in list(tracked_dirs) if d for i in range(1, d.count("/") + 1)}
+    tracked_keys = {_path_key(path) for path in tracked}
+    tracked_dirs = {_ancestor for key in tracked_keys for _ancestor in _ancestors(key)}
     refused = []
     for member in tf.getmembers():
         name, why = _member_name(member)
+        key = _path_key(name)
+        ancestors = _ancestors(key)
         entry = None
         if why is None and member.mode & 0o7000:
             why = "it has a setuid, setgid or sticky bit"
-        if why is None and name in entries:
+        if why is None and key in seen:
             why = "it is in the archive twice"
-        ancestors = [posixpath.join(*name.split("/")[:i]) for i in range(1, name.count("/") + 1)]
         if why is None and any(a in links for a in ancestors):
             why = "it would be written through a link of the cloud copy"
-        if why is None and (name in tracked or any(a in tracked for a in ancestors)
-                            or name in tracked_dirs and not member.isdir()):
+        if why is None and (key in tracked_keys or any(a in tracked_keys for a in ancestors)
+                            or key in tracked_dirs and not member.isdir()):
             why = "it clashes with a path the cloud copy tracks in git"
         if why is None:
             # Plain permissions only: executable or not.
@@ -345,13 +359,14 @@ def _entries(tf: tarfile.TarFile, tracked: frozenset[str] = frozenset()) -> tupl
             elif member.issym():
                 _, why = _link_target(name, member.linkname)
                 entry = None if why else _Entry(name, "symlink", 0o777, member, member.linkname)
-                links.add(name)
+                links.add(key)
             else:
                 why = "it is a device, pipe or other special file"
         if why:
             refused.append(f"{name} ({why})")
         elif entry is not None:
             entries[name] = entry
+            seen.add(key)
     return list(entries.values()), refused
 
 
