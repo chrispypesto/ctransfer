@@ -281,3 +281,58 @@ def test_pulled_files_get_plain_permissions(tmp_path):
     _pull(tmp_path, manifest, home, pushed)
     assert stat.S_IMODE((repo / "run.sh").stat().st_mode) == 0o755
     assert stat.S_IMODE((repo / "notes.txt").stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("commit", [True, False], ids=["committed", "staged"])
+@pytest.mark.parametrize("link, member, why", [
+    (".git", "sub/hooks/post-commit", r"sub \(it is a link into a \.git folder"),
+    ("../../outside", "sub/a/b/planted", r"sub \(it is a link pointing outside the folder"),
+    (".claude", "sub/settings.json", r"sub/settings\.json \(it would be written through a link of the cloud copy"),
+])
+def test_pull_refuses_writing_through_links_the_checkout_would_make(tmp_path, commit, link, member, why):
+    """A link the cloud copy tracks in git (committed, or staged into the uncommitted diff) only appears at
+    checkout, after the untracked files were checked: pull checks it, and what would be written through it, up
+    front. Nothing is written, inside the repo or outside it."""
+    def setup(repo):
+        (tmp_path / "outside").mkdir()
+    repo, home, pushed, vm_repo, export = _git_round(tmp_path, setup)
+    os.symlink(link, vm_repo / "sub")
+    run_git(vm_repo, "add", "sub")
+    if commit:
+        run_git(vm_repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "link")
+    manifest = export()
+    _add_to_tar(tmp_path / "x" / "workspace" / "untracked.tar", _file(member, b"#!/bin/sh\nid\n", 0o755))
+    before = _work_tree_and_config(repo)
+
+    with pytest.raises(apply.ApplyError, match=why):
+        _pull(tmp_path, manifest, home, pushed, accept_config=True)
+    assert _work_tree_and_config(repo) == before
+    assert list((tmp_path / "outside").iterdir()) == []
+
+
+def test_a_new_link_into_a_config_folder_needs_accept_config(tmp_path):
+    repo, home, pushed, vm_repo, export = _git_round(tmp_path)
+    (vm_repo / ".claude").mkdir()
+    (vm_repo / ".claude" / "notes.md").write_text("x\n")
+    os.symlink(".claude", vm_repo / "settings-dir")
+    run_git(vm_repo, "add", "-A")
+    run_git(vm_repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "link")
+    manifest = export()
+    with pytest.raises(apply.ApplyError, match=r"\.claude/notes\.md, settings-dir\. Nothing was changed"):
+        _pull(tmp_path, manifest, home, pushed)
+    _pull(tmp_path, manifest, home, pushed, accept_config=True)
+    assert os.readlink(repo / "settings-dir") == ".claude"
+
+
+def test_untracked_files_are_not_written_into_git_through_a_local_link(tmp_path):
+    """A link the user has (untracked) that leads into .git: nothing of the cloud copy is written through it."""
+    def setup(repo):
+        os.symlink(".git", repo / "gitdir")
+    repo, home, pushed, vm_repo, export = _git_round(tmp_path, setup)
+    manifest = export()
+    with tarfile.open(tmp_path / "x" / "workspace" / "untracked.tar") as tf:
+        assert "gitdir" not in tf.getnames()  # never sent: a link into .git
+    _add_to_tar(tmp_path / "x" / "workspace" / "untracked.tar", _file("gitdir/hooks/post-commit", b"#!/bin/sh\nid\n", 0o755))
+    with pytest.raises(apply.ApplyError, match=r"leads into a \.git folder through a link here"):
+        _pull(tmp_path, manifest, home, pushed)
+    assert not (repo / ".git" / "hooks" / "post-commit").exists()

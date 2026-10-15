@@ -119,6 +119,12 @@ def locate(cwd) -> dict:
     return {"kind": "tree", "root": str(cwd)}
 
 
+def _leads_into_git(root: Path, rel: str) -> bool:
+    """Whether root/rel is a link into a .git folder (never sent: pull refuses it)."""
+    path = root / rel
+    return path.is_symlink() and _link_target(rel, os.readlink(path))[1] is not None
+
+
 def _plain_mode(info: tarfile.TarInfo) -> tarfile.TarInfo:
     """An archived file without setuid, setgid or sticky bits, which extraction refuses."""
     info.mode &= 0o777
@@ -139,7 +145,8 @@ def _capture_git(root: Path, out: Path) -> dict:
     (out / "dirty.diff").write_bytes(git_bytes(root, "diff", "--binary", "HEAD", *pathspec))
 
     # Never git's own files (a nested repo's .git): pull refuses them, as they can run commands.
-    untracked = [u for u in _split_z(git(root, "ls-files", "--others", "--exclude-standard", "-z")) if not is_git_path(u)]
+    untracked = [u for u in _split_z(git(root, "ls-files", "--others", "--exclude-standard", "-z"))
+                 if not is_git_path(u) and not _leads_into_git(root, u)]
     skipped += [u for u in untracked if is_secret_name(u)]
     with tarfile.open(out / "untracked.tar", "w") as tf:
         for u in untracked:
@@ -293,13 +300,14 @@ def _link_target(name: str, target: str) -> tuple[str | None, str | None]:
     return resolved, None
 
 
-def _entries(tf: tarfile.TarFile) -> tuple[list[_Entry], list[str]]:
+def _entries(tf: tarfile.TarFile, through: frozenset[str] = frozenset()) -> tuple[list[_Entry], list[str]]:
     """The members of an archive of untracked files or of a non-git folder, checked one by one (not trusting
     tarfile's own filters): plain files, folders, hard links to earlier files of the archive and symlinks only, at
-    plain paths inside the folder, outside .git, without setuid, setgid or sticky bits. Returns the entries and why
-    each refused member is refused."""
+    plain paths inside the folder, outside .git, without setuid, setgid or sticky bits, and not under a link of the
+    archive or one of the paths in through (links the checkout makes: git never lists files beyond a link). Returns
+    the entries and why each refused member is refused."""
     entries: dict[str, _Entry] = {}
-    links: set[str] = set()
+    links: set[str] = set(through)
     refused = []
     for member in tf.getmembers():
         name, why = _member_name(member)
@@ -309,7 +317,7 @@ def _entries(tf: tarfile.TarFile) -> tuple[list[_Entry], list[str]]:
         if why is None and name in entries:
             why = "it is in the archive twice"
         if why is None and any(posixpath.join(*name.split("/")[:i]) in links for i in range(1, name.count("/") + 1)):
-            why = "it would be written through a link in the archive"
+            why = "it would be written through a link of the cloud copy"
         if why is None:
             # Plain permissions only: executable or not.
             mode = 0o755 if member.isdir() or member.mode & 0o111 else 0o644
@@ -342,6 +350,26 @@ def _inside(path: Path, root_real: Path) -> bool:
     return real == root_real or root_real in real.parents
 
 
+def _resolved(root: Path, name: str) -> str | None:
+    """Where writing name under root lands, as a path relative to root with the links along the way followed (the
+    last component itself not followed), None when that is outside root."""
+    root_real = Path(os.path.realpath(root))
+    parent = Path(os.path.realpath(root / posixpath.dirname(name)))
+    if not (parent == root_real or root_real in parent.parents):
+        return None
+    return posixpath.normpath(posixpath.join(parent.relative_to(root_real).as_posix(), posixpath.basename(name)))
+
+
+def _landing_problem(root: Path, name: str) -> str | None:
+    """Why name can't be written under root once local links are followed: it lands outside root or in .git."""
+    landing = _resolved(root, name)
+    if landing is None:
+        return f"{name} (its path leads outside the folder through a link here)"
+    if is_git_path(landing):
+        return f"{name} (its path leads into a .git folder through a link here)"
+    return None
+
+
 def _plan(tf: tarfile.TarFile, entries: list[_Entry], root: Path, *, outside_links: bool) -> tuple[list[_Entry], list[str]]:
     """The entries that would change something at root (the others match what is there), and why any entry can't
     be written there: a path that leads outside root through a local link, a file where a folder is, a link pointing
@@ -350,8 +378,8 @@ def _plan(tf: tarfile.TarFile, entries: list[_Entry], root: Path, *, outside_lin
     changes, problems = [], []
     for e in entries:
         dest = root / e.name
-        if not _inside(dest.parent, root_real):
-            problems.append(f"{e.name} (its path leads outside the folder through a link here)")
+        if problem := _landing_problem(root, e.name):
+            problems.append(problem)
             continue
         is_dir = dest.is_dir() and not dest.is_symlink()
         if e.kind == "dir":
@@ -369,31 +397,39 @@ def _plan(tf: tarfile.TarFile, entries: list[_Entry], root: Path, *, outside_lin
             continue
         if dest.is_symlink() and os.readlink(dest) == e.target:
             continue  # unchanged, even if it points outside the folder: it was there before
-        inside, _ = _link_target(e.name, e.target)
-        if not outside_links and (inside is None or not _inside(dest.parent / e.target, root_real)):
+        leads_to, _ = _link_target(e.name, e.target)
+        landing = _resolved(root, leads_to) if leads_to is not None else None
+        if not outside_links and (landing is None or not _inside(dest.parent / e.target, root_real)):
             problems.append(f"{e.name} (it is a link pointing outside the folder, to {e.target})")
+            continue
+        if landing is not None and is_git_path(landing):
+            problems.append(f"{e.name} (it is a link into a .git folder, git's own files, which can run commands)")
             continue
         changes.append(e)
     return changes, problems
 
 
-def extract_problems(tar_path, root, *, outside_links: bool = False) -> list[str]:
+def _refusal(root, listed: list[str]) -> list[str]:
+    """The problem that the cloud copy has the files (or links) listed, which pull won't write at root."""
+    if not listed:
+        return []
+    shown = "; ".join(listed[:10]) + (f"; and {len(listed) - 10} more" if len(listed) > 10 else "")
+    return [f"the cloud copy of {root} has files pull won't write there: {shown}. Nothing was changed"]
+
+
+def extract_problems(tar_path, root, *, outside_links: bool = False, through: frozenset[str] = frozenset()) -> list[str]:
     """Why extracting the archive at tar_path over root (see _extract) would be refused; [] if it wouldn't."""
     tar_path = Path(tar_path)
     if not tar_path.exists():
         return []
     with tarfile.open(tar_path) as tf:
-        entries, refused = _entries(tf)
+        entries, refused = _entries(tf, through)
         _, problems = _plan(tf, entries, Path(root), outside_links=outside_links)
-    if not refused and not problems:
-        return []
-    listed = refused + problems
-    shown = "; ".join(listed[:10]) + (f"; and {len(listed) - 10} more" if len(listed) > 10 else "")
-    return [f"the cloud copy of {root} has files pull won't write there: {shown}. Nothing was changed"]
+    return _refusal(root, refused + problems)
 
 
 def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back_up=None,
-             outside_links: bool = False) -> list[str]:
+             outside_links: bool = False, through: frozenset[str] = frozenset()) -> list[str]:
     """Write the archive at tar_path over root: every member checked first (see _entries and _plan), refusing the
     whole archive with WorkspaceError before writing anything if one fails; the files read out to a staging folder;
     then each file or link that differs from root's put in place with a rename (folders first, links last), after
@@ -402,10 +438,10 @@ def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back
     if not tar_path.exists():
         return []
     with tarfile.open(tar_path) as tf, tempfile.TemporaryDirectory(prefix="ctransfer-staging-") as staging:
-        entries, refused = _entries(tf)
+        entries, refused = _entries(tf, through)
         changes, problems = _plan(tf, entries, root, outside_links=outside_links)
         if refused or problems:
-            raise WorkspaceError(extract_problems(tar_path, root, outside_links=outside_links)[0])
+            raise WorkspaceError(_refusal(root, refused + problems)[0])
         staged = {}
         for i, e in enumerate(changes):
             if e.kind == "file":
@@ -415,14 +451,15 @@ def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back
                     if src is not None:
                         shutil.copyfileobj(src, out)
 
-        root_real = Path(os.path.realpath(root))
         backed_up = []
         order = {"dir": 0, "file": 1, "symlink": 2}
         for e in sorted(changes, key=lambda e: (order[e.kind], e.name.count("/"))):
             dest = root / e.name
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if not _inside(dest.parent, root_real):  # a link made since the check above
-                raise WorkspaceError(f"{e.name} would be written outside {root} through a link")
+            # Again, before and after making its folders: a link may have appeared since the check above.
+            for _ in range(2):
+                if problem := _landing_problem(root, e.name):
+                    raise WorkspaceError(f"pull stopped before writing {problem}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
             if e.kind == "dir":
                 dest.mkdir(mode=e.mode, exist_ok=True)
                 continue
@@ -442,11 +479,12 @@ def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back
     return sorted(backed_up)
 
 
-def _apply_dirty(root: Path, src: Path, *, backup_dir: Path | None = None, outside_links: bool = False) -> list[str]:
+def _apply_dirty(root: Path, src: Path, *, backup_dir: Path | None = None, outside_links: bool = False,
+                 through: frozenset[str] = frozenset()) -> list[str]:
     diff = src / "dirty.diff"
     if diff.exists() and diff.stat().st_size:
         git(root, "apply", "--binary", "--whitespace=nowarn", str(diff))
-    return _extract(src / "untracked.tar", root, backup_dir=backup_dir, outside_links=outside_links)
+    return _extract(src / "untracked.tar", root, backup_dir=backup_dir, outside_links=outside_links, through=through)
 
 
 def restore_fresh(meta: dict, src, root) -> None:
@@ -567,7 +605,10 @@ def check_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
         _fetch(root, src)
         problems = check_local(root, branch=meta.get("branch"), target=meta["head"], stash=stash, force=force,
                                pushed_changes=pushed_changes)
-        problems += extract_problems(src / "untracked.tar", root)
+        cloud = _cloud_tracked(root, src, meta["head"])
+        links = _new_links(root, cloud)
+        problems += _refusal(root, [f"{path} ({why})" for path, _, _, why in links if why])
+        problems += extract_problems(src / "untracked.tar", root, through=_link_paths(cloud))
     if not accept_config and (changed := config_changes(meta, src, root, pushed_files=pushed_files)):
         problems.append(config_problem(changed))
     return problems
@@ -599,9 +640,9 @@ def _local_blob(path: Path, object_format: str) -> str | None:
     return None
 
 
-def _tree_blobs(out: bytes, id_field: int) -> dict[str, str]:
-    """{path: blob id} from `git ls-files -s -z` (id_field 1) or `git ls-tree -r -z` (id_field 2) output, leaving
-    out submodules."""
+def _tree_blobs(out: bytes, id_field: int) -> dict[str, tuple[str, str]]:
+    """{path: (mode, blob id)} from `git ls-files -s -z` (id_field 1) or `git ls-tree -r -z` (id_field 2) output,
+    leaving out submodules."""
     blobs = {}
     for rec in out.split(b"\0"):
         if not rec:
@@ -609,13 +650,43 @@ def _tree_blobs(out: bytes, id_field: int) -> dict[str, str]:
         info, path = rec.split(b"\t", 1)
         fields = info.split(b" ")
         if fields[0] != b"160000":
-            blobs[os.fsdecode(path)] = fields[id_field].decode()
+            blobs[os.fsdecode(path)] = (fields[0].decode(), fields[id_field].decode())
     return blobs
 
 
-def _cloud_tracked(root: Path, src: Path, target: str) -> dict[str, str]:
-    """{path: blob id} of every file git tracks in the cloud copy (commit target plus its uncommitted diff), read
-    into a throwaway index: the working tree and the repo's own index are untouched. target must be fetched."""
+def _head_blobs(root: Path) -> dict[str, str]:
+    """{path: blob id} of the files in the local HEAD commit ({} before the first commit)."""
+    if not _try_git(root, "rev-parse", "--verify", "-q", "HEAD"):
+        return {}
+    return {path: blob for path, (_, blob) in _tree_blobs(git_bytes(root, "ls-tree", "-r", "-z", "HEAD"), 2).items()}
+
+
+def _link_paths(cloud: dict[str, tuple[str, str]]) -> frozenset[str]:
+    return frozenset(path for path, (mode, _) in cloud.items() if mode == "120000")
+
+
+def _new_links(root: Path, cloud: dict[str, tuple[str, str]]) -> list[tuple[str, str, str | None, str | None]]:
+    """The links git tracks in the cloud copy (cloud: _cloud_tracked) that the user doesn't have already (not in the
+    working tree, not in the local HEAD), as (path, target, where it leads inside the folder or None, why pull
+    refuses it or None): git checks out a link anywhere, so pull checks where each new one points first."""
+    object_format, head = _object_format(root), _head_blobs(root)
+    links = []
+    for path, (mode, blob) in sorted(cloud.items()):
+        if mode != "120000" or blob in (_local_blob(root / path, object_format), head.get(path)):
+            continue
+        target = os.fsdecode(git_bytes(root, "cat-file", "blob", blob))
+        leads_to, why = _link_target(path, target)
+        if why is None and (leads_to is None or _resolved(root, leads_to) is None):
+            leads_to, why = None, f"it is a link pointing outside the folder, to {target}"
+        elif why is None and is_git_path(_resolved(root, leads_to) or ""):
+            why = "it is a link into a .git folder, git's own files, which can run commands"
+        links.append((path, target, leads_to, why))
+    return links
+
+
+def _cloud_tracked(root: Path, src: Path, target: str) -> dict[str, tuple[str, str]]:
+    """{path: (mode, blob id)} of every file git tracks in the cloud copy (commit target plus its uncommitted diff),
+    read into a throwaway index: the working tree and the repo's own index are untouched. target must be fetched."""
     with tempfile.TemporaryDirectory(prefix="ctransfer-index-") as tmp:
         env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
         git(root, "read-tree", target, env_extra=env)
@@ -649,36 +720,41 @@ def config_changes(meta: dict, src, root, *, pushed_files: dict | None = None) -
     local HEAD; in a non-git folder, the one there or the pushed one (pushed_files). A git repo's bundle must be
     fetched (check_existing does that)."""
     src, root = Path(src).resolve(), Path(root)
+
+    def configures(name: str) -> bool:  # where it lands too, following the local links on the way
+        return is_config_path(name) or is_config_path(_resolved(root, name) or "")
     if meta["kind"] == "tree":
         changed = []
         tar_path = src / "tree.tar"
         if tar_path.exists():
             with tarfile.open(tar_path) as tf:
                 for member in tf:
-                    if not (member.isfile() or member.islnk() or member.issym()) or not is_config_path(member.name):
+                    if not (member.isfile() or member.islnk() or member.issym()) or not configures(member.name):
                         continue
                     cloud = _member_fingerprint(tf, member)
                     if cloud not in (_local_fingerprint(root, member.name), (pushed_files or {}).get(member.name)):
                         changed.append(member.name)
         return sorted(set(changed))
     object_format = _object_format(root)
-    cloud = {path: blob for path, blob in _cloud_tracked(root, src, meta["head"]).items() if is_config_path(path)}
-    cloud.update(_archived_blobs(src / "untracked.tar", object_format, is_config_path))
-    head = {}
-    if _try_git(root, "rev-parse", "--verify", "-q", "HEAD"):
-        head = _tree_blobs(git_bytes(root, "ls-tree", "-r", "-z", "HEAD"), 2)
-    return sorted(path for path, blob in cloud.items()
-                  if blob not in (_local_blob(root / path, object_format), head.get(path)))
+    tracked = _cloud_tracked(root, src, meta["head"])
+    cloud = {path: blob for path, (_, blob) in tracked.items() if configures(path)}
+    cloud.update(_archived_blobs(src / "untracked.tar", object_format, configures))
+    head = _head_blobs(root)
+    changed = {path for path, blob in cloud.items()
+               if blob not in (_local_blob(root / path, object_format), head.get(path))}
+    # A new link into a config folder makes what is written through it config too.
+    changed |= {path for path, _, leads_to, _ in _new_links(root, tracked) if leads_to and configures(leads_to)}
+    return sorted(changed)
 
 
-def _checkout_clobbers(root: Path, cloud: dict[str, str], object_format: str) -> list[str]:
+def _checkout_clobbers(root: Path, cloud: dict[str, tuple[str, str]], object_format: str) -> list[str]:
     """Local untracked or ignored files that checking out the cloud copy (cloud: _cloud_tracked) would overwrite
     with different content: git replaces ignored files without asking."""
     others = _split_z(git(root, "ls-files", "--others", "--directory", "-z"))
     files = {o for o in others if not o.endswith("/")}
     dirs = tuple(o for o in others if o.endswith("/"))
     clobbered = []
-    for path, blob in cloud.items():
+    for path, (_, blob) in cloud.items():
         if path in files or dirs and path.startswith(dirs):
             local = _local_blob(root / path, object_format)
             if local is not None and local != blob:
@@ -768,7 +844,8 @@ def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
         git(root, "stash", "push", "-q", "-u", "-m", stashed, "--", ".", *[f":(exclude,literal){k}" for k in keep])
     # Untracked or ignored local files the checkout (or the uncommitted diff) would replace: git overwrites
     # ignored ones without asking, and the diff can't add a file that is already there. Saved, then moved aside.
-    replaced = _checkout_clobbers(root, _cloud_tracked(root, src, target), _object_format(root))
+    cloud = _cloud_tracked(root, src, target)
+    replaced = _checkout_clobbers(root, cloud, _object_format(root))
     for path in replaced:
         if backup_dir is not None:
             (backup_dir / path).parent.mkdir(parents=True, exist_ok=True)
@@ -783,5 +860,5 @@ def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
         git(root, "checkout", "-q", "-b", branch, target)
     else:
         git(root, "checkout", "-q", "--detach", target)
-    replaced += _apply_dirty(root, src, backup_dir=backup_dir)
+    replaced += _apply_dirty(root, src, backup_dir=backup_dir, through=_link_paths(cloud))
     return {"stash": stashed, "replaced": sorted(set(replaced))}
