@@ -287,7 +287,7 @@ def test_pulled_files_get_plain_permissions(tmp_path):
 @pytest.mark.parametrize("link, member, why", [
     (".git", "sub/hooks/post-commit", r"sub \(it is a link into a \.git folder"),
     ("../../outside", "sub/a/b/planted", r"sub \(it is a link pointing outside the folder"),
-    (".claude", "sub/settings.json", r"sub/settings\.json \(it would be written through a link of the cloud copy"),
+    (".claude", "sub/settings.json", r"sub/settings\.json \(it clashes with a path the cloud copy tracks in git"),
 ])
 def test_pull_refuses_writing_through_links_the_checkout_would_make(tmp_path, commit, link, member, why):
     """A link the cloud copy tracks in git (committed, or staged into the uncommitted diff) only appears at
@@ -359,6 +359,25 @@ def test_pull_refuses_a_chain_of_links_that_leads_outside(tmp_path, where):
     before = _work_tree_and_config(repo)
 
     with pytest.raises(apply.ApplyError, match=r"f \(it is a link whose target goes into a folder and back out"):
+        _pull(tmp_path, manifest, home, pushed)
+    assert _work_tree_and_config(repo) == before
+    assert run_git(repo, "log", "-1", "--format=%s") == "ignore"
+
+
+@pytest.mark.parametrize("member", [_link("cfg", "elsewhere"), _file("cfg", b"x"), _file("cfg/x/y", b"x"),
+                                    _file("cfg/x", b"x")])
+def test_pull_refuses_untracked_files_that_clash_with_what_the_checkout_makes(tmp_path, member):
+    """Checked before the checkout, so nothing is half applied: HEAD stays, the work tree is untouched."""
+    repo, home, pushed, vm_repo, export = _git_round(tmp_path)
+    (vm_repo / "cfg").mkdir()
+    (vm_repo / "cfg" / "x").write_text("tracked\n")
+    run_git(vm_repo, "add", "cfg")
+    run_git(vm_repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "cfg")
+    manifest = export()
+    _add_to_tar(tmp_path / "x" / "workspace" / "untracked.tar", member)
+    before = _work_tree_and_config(repo)
+
+    with pytest.raises(apply.ApplyError, match=r"clashes with a path the cloud copy tracks in git"):
         _pull(tmp_path, manifest, home, pushed)
     assert _work_tree_and_config(repo) == before
     assert run_git(repo, "log", "-1", "--format=%s") == "ignore"

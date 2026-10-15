@@ -304,14 +304,17 @@ def _link_target(name: str, target: str) -> tuple[str | None, str | None]:
     return resolved, None
 
 
-def _entries(tf: tarfile.TarFile, through: frozenset[str] = frozenset()) -> tuple[list[_Entry], list[str]]:
+def _entries(tf: tarfile.TarFile, tracked: frozenset[str] = frozenset()) -> tuple[list[_Entry], list[str]]:
     """The members of an archive of untracked files or of a non-git folder, checked one by one (not trusting
     tarfile's own filters): plain files, folders, hard links to earlier files of the archive and symlinks only, at
     plain paths inside the folder, outside .git, without setuid, setgid or sticky bits, and not under a link of the
-    archive or one of the paths in through (links the checkout makes: git never lists files beyond a link). Returns
-    the entries and why each refused member is refused."""
+    archive. tracked are the paths git tracks in the cloud copy (files and links the checkout makes): a member at
+    one, under one, or a non-folder at one of their folders is refused too (git never lists such untracked files),
+    so it can't clash with the checkout after it ran. Returns the entries and why each refused member is refused."""
     entries: dict[str, _Entry] = {}
-    links: set[str] = set(through)
+    links: set[str] = set()
+    tracked_dirs = {posixpath.dirname(path) for path in tracked}
+    tracked_dirs |= {posixpath.join(*d.split("/")[:i]) for d in list(tracked_dirs) if d for i in range(1, d.count("/") + 1)}
     refused = []
     for member in tf.getmembers():
         name, why = _member_name(member)
@@ -320,8 +323,12 @@ def _entries(tf: tarfile.TarFile, through: frozenset[str] = frozenset()) -> tupl
             why = "it has a setuid, setgid or sticky bit"
         if why is None and name in entries:
             why = "it is in the archive twice"
-        if why is None and any(posixpath.join(*name.split("/")[:i]) in links for i in range(1, name.count("/") + 1)):
+        ancestors = [posixpath.join(*name.split("/")[:i]) for i in range(1, name.count("/") + 1)]
+        if why is None and any(a in links for a in ancestors):
             why = "it would be written through a link of the cloud copy"
+        if why is None and (name in tracked or any(a in tracked for a in ancestors)
+                            or name in tracked_dirs and not member.isdir()):
+            why = "it clashes with a path the cloud copy tracks in git"
         if why is None:
             # Plain permissions only: executable or not.
             mode = 0o755 if member.isdir() or member.mode & 0o111 else 0o644
@@ -421,19 +428,19 @@ def _refusal(root, listed: list[str]) -> list[str]:
     return [f"the cloud copy of {root} has files pull won't write there: {shown}. Nothing was changed"]
 
 
-def extract_problems(tar_path, root, *, outside_links: bool = False, through: frozenset[str] = frozenset()) -> list[str]:
+def extract_problems(tar_path, root, *, outside_links: bool = False, tracked: frozenset[str] = frozenset()) -> list[str]:
     """Why extracting the archive at tar_path over root (see _extract) would be refused; [] if it wouldn't."""
     tar_path = Path(tar_path)
     if not tar_path.exists():
         return []
     with tarfile.open(tar_path) as tf:
-        entries, refused = _entries(tf, through)
+        entries, refused = _entries(tf, tracked)
         _, problems = _plan(tf, entries, Path(root), outside_links=outside_links)
     return _refusal(root, refused + problems)
 
 
 def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back_up=None,
-             outside_links: bool = False, through: frozenset[str] = frozenset()) -> list[str]:
+             outside_links: bool = False, tracked: frozenset[str] = frozenset()) -> list[str]:
     """Write the archive at tar_path over root: every member checked first (see _entries and _plan), refusing the
     whole archive with WorkspaceError before writing anything if one fails; the files read out to a staging folder;
     then each file or link that differs from root's put in place with a rename (folders first, links last), after
@@ -442,7 +449,7 @@ def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back
     if not tar_path.exists():
         return []
     with tarfile.open(tar_path) as tf, tempfile.TemporaryDirectory(prefix="ctransfer-staging-") as staging:
-        entries, refused = _entries(tf, through)
+        entries, refused = _entries(tf, tracked)
         changes, problems = _plan(tf, entries, root, outside_links=outside_links)
         if refused or problems:
             raise WorkspaceError(_refusal(root, refused + problems)[0])
@@ -489,11 +496,11 @@ def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back
 
 
 def _apply_dirty(root: Path, src: Path, *, backup_dir: Path | None = None, outside_links: bool = False,
-                 through: frozenset[str] = frozenset()) -> list[str]:
+                 tracked: frozenset[str] = frozenset()) -> list[str]:
     diff = src / "dirty.diff"
     if diff.exists() and diff.stat().st_size:
         git(root, "apply", "--binary", "--whitespace=nowarn", str(diff))
-    return _extract(src / "untracked.tar", root, backup_dir=backup_dir, outside_links=outside_links, through=through)
+    return _extract(src / "untracked.tar", root, backup_dir=backup_dir, outside_links=outside_links, tracked=tracked)
 
 
 def restore_fresh(meta: dict, src, root) -> None:
@@ -617,7 +624,7 @@ def check_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
         cloud = _cloud_tracked(root, src, meta["head"])
         links = _new_links(root, cloud)
         problems += _refusal(root, [f"{path} ({why})" for path, _, _, why in links if why])
-        problems += extract_problems(src / "untracked.tar", root, through=_link_paths(cloud))
+        problems += extract_problems(src / "untracked.tar", root, tracked=frozenset(cloud))
     if not accept_config and (changed := config_changes(meta, src, root, pushed_files=pushed_files)):
         problems.append(config_problem(changed))
     return problems
@@ -668,10 +675,6 @@ def _head_blobs(root: Path) -> dict[str, str]:
     if not _try_git(root, "rev-parse", "--verify", "-q", "HEAD"):
         return {}
     return {path: blob for path, (_, blob) in _tree_blobs(git_bytes(root, "ls-tree", "-r", "-z", "HEAD"), 2).items()}
-
-
-def _link_paths(cloud: dict[str, tuple[str, str]]) -> frozenset[str]:
-    return frozenset(path for path, (mode, _) in cloud.items() if mode == "120000")
 
 
 def _new_links(root: Path, cloud: dict[str, tuple[str, str]]) -> list[tuple[str, str, str | None, str | None]]:
@@ -869,5 +872,5 @@ def apply_existing(meta: dict, src, root, *, stash: bool = False, force: bool = 
         git(root, "checkout", "-q", "-b", branch, target)
     else:
         git(root, "checkout", "-q", "--detach", target)
-    replaced += _apply_dirty(root, src, backup_dir=backup_dir, through=_link_paths(cloud))
+    replaced += _apply_dirty(root, src, backup_dir=backup_dir, tracked=frozenset(cloud))
     return {"stash": stashed, "replaced": sorted(set(replaced))}
