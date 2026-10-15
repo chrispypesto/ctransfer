@@ -325,7 +325,6 @@ def _entries(tf: tarfile.TarFile, tracked: frozenset[str] = frozenset()) -> tupl
     # Compared by _path_key: on a case-insensitive file system CFG and cfg are the same path.
     entries: dict[str, _Entry] = {}
     seen: set[str] = set()
-    links: set[str] = set()
     tracked_keys = {_path_key(path) for path in tracked}
     tracked_dirs = {_ancestor for key in tracked_keys for _ancestor in _ancestors(key)}
     refused = []
@@ -338,8 +337,6 @@ def _entries(tf: tarfile.TarFile, tracked: frozenset[str] = frozenset()) -> tupl
             why = "it has a setuid, setgid or sticky bit"
         if why is None and key in seen:
             why = "it is in the archive twice"
-        if why is None and any(a in links for a in ancestors):
-            why = "it would be written through a link of the cloud copy"
         if why is None and (key in tracked_keys or any(a in tracked_keys for a in ancestors)
                             or key in tracked_dirs and not member.isdir()):
             why = "it clashes with a path the cloud copy tracks in git"
@@ -359,7 +356,6 @@ def _entries(tf: tarfile.TarFile, tracked: frozenset[str] = frozenset()) -> tupl
             elif member.issym():
                 _, why = _link_target(name, member.linkname)
                 entry = None if why else _Entry(name, "symlink", 0o777, member, member.linkname)
-                links.add(key)
             else:
                 why = "it is a device, pipe or other special file"
         if why:
@@ -367,6 +363,14 @@ def _entries(tf: tarfile.TarFile, tracked: frozenset[str] = frozenset()) -> tupl
         elif entry is not None:
             entries[name] = entry
             seen.add(key)
+    # Whatever the order: nothing under a file or link of the archive, so no entry can be in another's way.
+    keys = {name: _path_key(name) for name in entries}
+    not_dirs = {keys[name] for name, e in entries.items() if e.kind != "dir"}
+    above = {a for key in keys.values() for a in _ancestors(key)}
+    for name, e in list(entries.items()):
+        if any(a in not_dirs for a in _ancestors(keys[name])) or e.kind != "dir" and keys[name] in above:
+            refused.append(f"{name} (it would be written through a link or into a file of the cloud copy)")
+            del entries[name]
     return list(entries.values()), refused
 
 
@@ -479,34 +483,37 @@ def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back
 
         backed_up = []
         order = {"dir": 0, "file": 1, "symlink": 2}
-        for e in sorted(changes, key=lambda e: (order[e.kind], e.name.count("/"))):
-            dest = root / e.name
-            # Again, before and after making its folders: a link may have appeared since the check above.
-            for _ in range(2):
-                if problem := _landing_problem(root, e.name):
-                    raise WorkspaceError(f"pull stopped before writing {problem}")
-                dest.parent.mkdir(parents=True, exist_ok=True)
-            if e.kind == "dir":
-                dest.mkdir(mode=e.mode, exist_ok=True)
-                continue
-            if os.path.lexists(dest) and backup_dir is not None and (back_up is None or back_up(e.name)):
-                (backup_dir / e.name).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dest, backup_dir / e.name, follow_symlinks=False)
-                backed_up.append(e.name)
-            tmp = dest.with_name(f".{dest.name}.ctransfer-{os.getpid()}")
-            if os.path.lexists(tmp):
-                tmp.unlink()
-            if e.kind == "file":
-                shutil.copyfile(staged[e.name], tmp)
-                os.chmod(tmp, e.mode)
-            else:
-                # Again, now that the archive's earlier links exist.
-                landing = _resolved(root, posixpath.join(posixpath.dirname(e.name), e.target))
-                if not outside_links and (landing is None or is_git_path(landing)):
-                    raise WorkspaceError(f"pull stopped before writing {e.name} (it is a link pointing outside the "
-                                         f"folder or into .git, to {e.target})")
-                os.symlink(e.target, tmp)
-            os.replace(tmp, dest)
+        try:
+            for e in sorted(changes, key=lambda e: (order[e.kind], e.name.count("/"))):
+                dest = root / e.name
+                # Again, before and after making its folders: a link may have appeared since the check above.
+                for _ in range(2):
+                    if problem := _landing_problem(root, e.name):
+                        raise WorkspaceError(f"pull stopped before writing {problem}")
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                if e.kind == "dir":
+                    dest.mkdir(mode=e.mode, exist_ok=True)
+                    continue
+                if os.path.lexists(dest) and backup_dir is not None and (back_up is None or back_up(e.name)):
+                    (backup_dir / e.name).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dest, backup_dir / e.name, follow_symlinks=False)
+                    backed_up.append(e.name)
+                tmp = dest.with_name(f".{dest.name}.ctransfer-{os.getpid()}")
+                if os.path.lexists(tmp):
+                    tmp.unlink()
+                if e.kind == "file":
+                    shutil.copyfile(staged[e.name], tmp)
+                    os.chmod(tmp, e.mode)
+                else:
+                    # Again, now that the archive's earlier links exist.
+                    landing = _resolved(root, posixpath.join(posixpath.dirname(e.name), e.target))
+                    if not outside_links and (landing is None or is_git_path(landing)):
+                        raise WorkspaceError(f"pull stopped before writing {e.name} (it is a link pointing outside the "
+                                             f"folder or into .git, to {e.target})")
+                    os.symlink(e.target, tmp)
+                os.replace(tmp, dest)
+        except OSError as err:  # the checks above should leave nothing to fail here
+            raise WorkspaceError(f"pull stopped while writing the cloud copy's files into {root}: {err}") from err
     return sorted(backed_up)
 
 

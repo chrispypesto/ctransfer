@@ -404,3 +404,45 @@ def test_clash_checks_ignore_case_like_a_mac(tmp_path, tracked, link, member):
     with pytest.raises(apply.ApplyError, match=r"clashes with a path the cloud copy tracks in git"):
         _pull(tmp_path, manifest, home, pushed)
     assert _work_tree_and_config(repo) == before
+
+
+@pytest.mark.parametrize("members", [
+    [_file("a"), _file("a/b")], [_file("a/b"), _link("a", "elsewhere")], [_link("a", "d"), _file("a/b")],
+], ids=["file over file", "link after", "link before"])
+def test_pull_refuses_archive_entries_in_each_others_way(tmp_path, members):
+    """Two untracked entries where one would be inside the other (a file or link), in either order: refused before
+    the checkout, so HEAD and the work tree stay as they were."""
+    repo, home, pushed, vm_repo, export = _git_round(tmp_path)
+    (vm_repo / "c.txt").write_text("c\n")
+    run_git(vm_repo, "add", "c.txt")
+    run_git(vm_repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "c")
+    manifest = export()
+    _add_to_tar(tmp_path / "x" / "workspace" / "untracked.tar", *members)
+    before = _work_tree_and_config(repo)
+    with pytest.raises(apply.ApplyError, match=r"a/b \(it would be written through a link or into a file"):
+        _pull(tmp_path, manifest, home, pushed)
+    assert _work_tree_and_config(repo) == before
+    assert run_git(repo, "log", "-1", "--format=%s") == "ignore"
+
+
+def test_plain_folder_pull_refuses_archive_entries_in_each_others_way(tmp_path):
+    folder = tmp_path / "laptop" / "notes"
+    folder.mkdir(parents=True)
+    (folder / "plan.txt").write_text("v1\n")
+    home = tmp_path / "laptop" / ".claude"
+    home.mkdir()
+    project_dir = sessions.encode_project_dir(str(folder))
+    pushed = bundle.build(tmp_path / "push.tgz", kind="new", home=home, session_id=SID, project_dir=project_dir,
+                          cwd=str(folder))
+    bundle.extract(tmp_path / "push.tgz", tmp_path / "pushed")
+    vm_folder = tmp_path / "vm" / "notes"
+    workspace.restore_fresh(pushed["workspace"], tmp_path / "pushed" / "workspace", vm_folder)
+    (vm_folder / "plan.txt").write_text("v2\n")
+    (tmp_path / "vm" / ".claude").mkdir()
+    bundle.build(tmp_path / "export.tgz", kind="export", home=tmp_path / "vm" / ".claude", session_id=SID,
+                 project_dir=project_dir, cwd=str(folder), workspace_dir=str(vm_folder), record_root=str(folder))
+    manifest = bundle.extract(tmp_path / "export.tgz", tmp_path / "x")
+    _add_to_tar(tmp_path / "x" / "workspace" / "tree.tar", _file("a/b"), _link("a", "elsewhere"))
+    with pytest.raises(apply.ApplyError, match=r"a/b \(it would be written through a link or into a file"):
+        _pull(tmp_path, manifest, home, pushed)
+    assert (folder / "plan.txt").read_text() == "v1\n" and not (folder / "a").exists()
