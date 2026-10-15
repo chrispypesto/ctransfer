@@ -77,6 +77,11 @@ def build(
     replaces the workspace root recorded in the manifest (the VM uses it to report the laptop path).
     """
     home = Path(home)
+    if kind != "export":  # on the laptop; the VM's export goes back to the root checked here
+        refusal = workspace.root_refusal(workspace.locate(workspace_dir or cwd)["root"])
+        if refusal:
+            raise BundleError(f"won't send this workspace: {refusal}. Start Claude Code in a project folder and "
+                              "send the session from there")
     proj = home / "projects" / project_dir
     transcript = proj / f"{session_id}.jsonl"
     if kind == "push" and not transcript.is_file():

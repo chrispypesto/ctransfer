@@ -121,6 +121,19 @@ def capture(cwd, out_dir) -> dict:
     return _capture_tree(Path(where["root"]), out)
 
 
+def root_refusal(root) -> str | None:
+    """Why root can't be a workspace that push reads or pull writes, None if it can: the home folder, a folder
+    containing it (such as /), or a hidden folder in it (~/.ssh, ~/.config/x), where files run at login or hold
+    credentials."""
+    home = Path(os.path.realpath(Path.home()))
+    real = Path(os.path.realpath(root))
+    if real == home or real in home.parents:
+        return f"{root} is your home folder or contains it"
+    if home in real.parents and any(part.startswith(".") for part in real.relative_to(home).parts):
+        return f"{root} is a hidden folder in your home folder, where files can run commands or hold credentials"
+    return None
+
+
 def locate(cwd) -> dict:
     """The workspace capture takes for cwd: {"kind": "git", "root": its repo's top level} for a git repo with a
     commit, else {"kind": "tree", "root": cwd}."""

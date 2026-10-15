@@ -62,7 +62,8 @@ ctransfer new ["first prompt"]     # start a fresh session on a VM in a copy of 
 ctransfer ssh <transfer-id>        # attach to the VM's claude; Ctrl-b then d detaches and leaves it running
 ctransfer ls | status <id> | usage
 ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
-                                   # (--accept-config: apply new or changed config files, see below)
+                                   # (--accept-config: apply new or changed config files, see below;
+                                   #  --workspace-dir: confirm where a session pushed elsewhere goes)
 ctransfer resume <session-id>      # carry on locally (claude --resume, told the session is back)
 ctransfer account delete           # delete your account: VMs, sessions, schedules, Claude token, secrets
 ```
@@ -88,6 +89,10 @@ After the VM has stopped, `pull` also refuses, and changes nothing, when the clo
 - has files that would land inside `.git/`, outside the project folder (also through a link), new links pointing outside it, or device files and other special files. Apart from such links, a push never sends these, so only a tampered cloud copy has them.
 
 These checks run against what was pushed from this machine. For a session pushed from another machine, `pull` checks only that the session isn't open locally before stopping the VM, and anything else that is wrong shows up after the VM has stopped; the cloud copy is still there to `pull` again.
+
+A session pushed from another machine (or whose push record is gone, e.g. after `account delete`) has nothing on this one that says where its workspace belongs. Before stopping the VM, `pull` names the folder the service reports and, in a terminal, asks before writing there; elsewhere (e.g. `/ctransfer pull`) it stops and tells you to confirm with `ctransfer pull <id> --workspace-dir <that folder>`.
+
+`push`, `new` and `pull` never use your home folder, a folder containing it (like `/`), or a hidden folder in it (like `~/.ssh` or `~/.config/x`) as the workspace: start Claude Code in a project folder instead.
 
 Untracked credential-looking files (`.env`, `*.pem`, `id_rsa*`, `*.tfvars`, …) are never uploaded. Pull leaves them alone, unless the cloud copy has its own file at the same path: then pull copies yours to `~/.claude/ctransfer-backups/<session>/<time>/workspace/` first and says so. The same goes for any other untracked or gitignored file the cloud copy replaces.
 

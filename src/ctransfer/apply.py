@@ -90,6 +90,7 @@ def check_before_export(pushed: dict, *, home: Path | None = None, force: bool =
         if len(local_ids) > count or (local_ids and len(local_ids) == count and local_ids[-1] != pushed["last_uuid"]):
             raise ApplyError(TRANSCRIPT_DIVERGED)
     ws = pushed["workspace"]
+    check_root(ws["root"])
     if ws["kind"] == "git":
         problems = workspace.check_local(ws["root"], branch=ws.get("branch"), target=ws["head"], stash=stash,
                                          force=force, pushed_changes=ws.get("changes"))
@@ -102,6 +103,13 @@ def check_before_export(pushed: dict, *, home: Path | None = None, force: bool =
 
 
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def check_root(root) -> None:
+    """Refuse to write a workspace at root if workspace.root_refusal does."""
+    refusal = workspace.root_refusal(root)
+    if refusal:
+        raise ApplyError(f"won't write the cloud copy's workspace there: {refusal}. Nothing was changed")
 
 
 def pushed_copy(pushed: dict) -> dict:
@@ -176,6 +184,8 @@ def apply_export(bundle_dir, manifest: dict, *, expect: dict, home: Path | None 
     home = Path(home or sessions.claude_home())
     check_manifest(manifest, expect)
     workspace_too = expect["workspace"] is not None
+    if workspace_too:
+        check_root(expect["workspace"]["root"])
     sid, project_dir = manifest["session_id"], manifest["project_dir"]
     src_proj = bundle_dir / "claude" / "projects" / project_dir
     remote_transcript = src_proj / f"{sid}.jsonl"
