@@ -43,6 +43,6 @@ case "$sub" in
     exec "$bin" new --detach ${flags[@]+"${flags[@]}"} -- "$@" ;;
   ssh | resume) echo "$sub needs an interactive terminal. In another terminal run:  ctransfer $sub $*"; exit 1 ;;
   *)
-    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] [--size=small|large] [prompt] | new [--remote-control] [--size=small|large] [prompt] | status [id] | ls | usage | pull <id> [--force|--as-fork|--stash] | rm <id> | ssh <id> | resume <session>]"
+    echo "usage: /ctransfer [push [--remote-control] [--no-file-history] [--size=small|large] [prompt] | new [--remote-control] [--size=small|large] [prompt] | status [id] | ls | usage | pull <id> [--force|--as-fork|--stash|--accept-config] | rm <id> | ssh <id> | resume <session>]"
     exit 2 ;;
 esac

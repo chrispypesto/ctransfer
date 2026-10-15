@@ -62,6 +62,7 @@ ctransfer new ["first prompt"]     # start a fresh session on a VM in a copy of 
 ctransfer ssh <transfer-id>        # attach to the VM's claude; Ctrl-b then d detaches and leaves it running
 ctransfer ls | status <id> | usage
 ctransfer pull <transfer-id>       # export at the next turn boundary, overwrite local, delete the VM
+                                   # (--accept-config: apply new or changed config files, see below)
 ctransfer resume <session-id>      # carry on locally (claude --resume, told the session is back)
 ctransfer account delete           # delete your account: VMs, sessions, schedules, Claude token, secrets
 ```
@@ -82,9 +83,13 @@ Uncommitted changes that were pushed are part of the cloud copy, so `pull` repla
 - the local workspace has changes made after the push (`--stash` sets them aside as a git stash; pull then says how to get them back) or its branch has commits the cloud copy lacks (`--force`).
 - the workspace is a folder that isn't a git repo, and files in it changed after the push (pull names them; `--force` copies them to a backup folder, says where, then pulls).
 
+After the VM has stopped, `pull` also refuses, and changes nothing, when the cloud copy:
+- adds or changes files that configure Claude Code or tools that run commands in the project: anything in `.claude/` or `.vscode/`, `.mcp.json`, `CLAUDE.md`, `CLAUDE.local.md`, `.envrc`. It lists them; if you expect those changes, run `ctransfer pull <id> --accept-config` to apply them. A version you already had (in your working tree or your last commit) doesn't count.
+- has files that would land inside `.git/`, outside the project folder (also through a link), new links pointing outside it, or device files and other special files. Apart from such links, a push never sends these, so only a tampered cloud copy has them.
+
 These checks run against what was pushed from this machine. For a session pushed from another machine, `pull` checks only that the session isn't open locally before stopping the VM, and anything else that is wrong shows up after the VM has stopped; the cloud copy is still there to `pull` again.
 
-Untracked credential-looking files (`.env`, `*.pem`, `id_rsa*`, `*.tfvars`, …) are never uploaded. Pull leaves them alone.
+Untracked credential-looking files (`.env`, `*.pem`, `id_rsa*`, `*.tfvars`, …) are never uploaded. Pull leaves them alone, unless the cloud copy has its own file at the same path: then pull copies yours to `~/.claude/ctransfer-backups/<session>/<time>/workspace/` first and says so. The same goes for any other untracked or gitignored file the cloud copy replaces.
 
 ## Credentials on the VM
 
