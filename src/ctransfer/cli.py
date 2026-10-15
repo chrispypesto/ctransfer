@@ -236,8 +236,35 @@ def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, size: 
     return wait_for(api, tid, {"running"}, timeout=25 * 60, sleep=sleep) if wait else api.call("GET", f"/sessions/{tid}")
 
 
+def confirm_destination(tid: str, cwd, workspace_dir: str | None) -> dict:
+    """For a session with no push record here: make sure the user wants its workspace written to the folder the
+    service names (cwd: a compromised service could name any folder). workspace_dir, when given, must be that
+    folder; else a terminal asks, and without one pull refuses. Raises ApplyError (or SystemExit on no). Returns
+    the confirmed workspace (workspace.locate), which pull must then use, whatever the service says later."""
+    if not (isinstance(cwd, str) and os.path.isabs(cwd)):
+        raise apply.ApplyError(f"the service names no usable folder for this session's workspace ({cwd!r}); "
+                               "nothing was changed")
+    where = workspace.locate(cwd)
+    dest = where["root"]
+    apply.check_root(dest)
+    if workspace_dir is not None:
+        if os.path.realpath(workspace_dir) not in (os.path.realpath(cwd), os.path.realpath(dest)):
+            raise apply.ApplyError(f"this session's workspace goes to {dest}, not {workspace_dir}; nothing was "
+                                   "changed")
+        return where
+    if sys.stdin.isatty():
+        _print(f"This session wasn't pushed from this computer, so nothing here confirms where its workspace "
+               f"belongs. The cloud copy's files would be written to:\n  {dest}")
+        if input("Write them there? [y/N] (N stops here and changes nothing) ").strip().lower() in ("y", "yes"):
+            return where
+        raise SystemExit("pull stopped; nothing was changed")
+    raise apply.ApplyError(f"this session wasn't pushed from this computer, so pull won't write its workspace to "
+                           f"{dest} without your say-so. Nothing was changed. If that is the right folder, run: "
+                           f"ctransfer pull {tid} --workspace-dir {shlex.quote(dest)}")
+
+
 def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = False, stash: bool = False,
-         accept_config: bool = False, sleep=time.sleep) -> dict:
+         accept_config: bool = False, workspace_dir: str | None = None, sleep=time.sleep) -> dict:
     """Bring a transfer's cloud copy back over the local session and workspace, then delete the transfer.
 
     Exporting shuts the VM down, so every check that can run without the cloud copy runs first, against what
@@ -252,6 +279,12 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
                          "is kept for a limited time). The local session is no longer marked as in the cloud: carry "
                          "on with it here.")
     pushed = read_push_record(tid)
+    # Fixed now: what the service says after the export can't move the workspace somewhere else.
+    if pushed:
+        expect = apply.pushed_copy(pushed)
+    else:
+        expect = {"session_id": item["session_id"], "project_dir": None,
+                  "workspace": confirm_destination(tid, item.get("cwd"), workspace_dir)}
     if item["state"] != "exported":
         if pushed:
             apply.check_before_export(pushed, home=home, force=force, as_fork=as_fork, stash=stash)
@@ -266,7 +299,6 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
         net.get_file(item["download_url"], path)
         manifest = bundle.extract(path, Path(tmp) / "x")
         pushed_ws = pushed["workspace"] if pushed else {}
-        expect = apply.pushed_copy(pushed) if pushed else apply.transfer_copy(item)
         result = apply.apply_export(Path(tmp) / "x", manifest, expect=expect, home=home, force=force,
                                     as_fork=as_fork, stash=stash, pushed_changes=pushed_ws.get("changes"),
                                     pushed_files=pushed_ws.get("files"), accept_config=accept_config)
@@ -276,7 +308,8 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
 
 def cmd_pull(args) -> None:
     result = pull(api_mod.Api.from_config(), args.transfer_id, home=sessions.claude_home(), force=args.force,
-                  as_fork=args.as_fork, stash=args.stash, accept_config=args.accept_config)
+                  as_fork=args.as_fork, stash=args.stash, accept_config=args.accept_config,
+                  workspace_dir=args.workspace_dir)
     forget_transfer(args.transfer_id)
     _report_pull(result)
 
@@ -1139,6 +1172,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
     p.add_argument("--stash", action="store_true", help="set aside local changes made since the push as a git stash instead of refusing")
     p.add_argument("--accept-config", action="store_true", help="apply new or changed config files from the cloud copy (.claude/, .mcp.json, CLAUDE.md, .envrc, .vscode/), which can run commands here")
+    p.add_argument("--workspace-dir", metavar="PATH", help="for a session pushed from another computer: confirm the folder its workspace is written to (pull names it)")
     p.set_defaults(fn=cmd_pull)
 
     p = sub.add_parser("resume", help="continue a pulled session locally (claude --resume, told it is back)")
