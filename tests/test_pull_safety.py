@@ -336,3 +336,29 @@ def test_untracked_files_are_not_written_into_git_through_a_local_link(tmp_path)
     with pytest.raises(apply.ApplyError, match=r"leads into a \.git folder through a link here"):
         _pull(tmp_path, manifest, home, pushed)
     assert not (repo / ".git" / "hooks" / "post-commit").exists()
+
+
+@pytest.mark.parametrize("where", ["archive", "committed", "committed d, archived f"])
+def test_pull_refuses_a_chain_of_links_that_leads_outside(tmp_path, where):
+    """d -> . and f -> d/d/../../outside: read as text f stays inside, on disk it leads two folders up."""
+    def setup(repo):
+        (tmp_path / "outside").mkdir()
+    repo, home, pushed, vm_repo, export = _git_round(tmp_path, setup)
+    if where != "archive":
+        os.symlink(".", vm_repo / "d")
+        if where == "committed":
+            os.symlink("d/d/../../outside", vm_repo / "f")
+        run_git(vm_repo, "add", "-A")
+        run_git(vm_repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "links")
+    manifest = export()
+    tar = tmp_path / "x" / "workspace" / "untracked.tar"
+    if where == "archive":
+        _add_to_tar(tar, _link("d", "."), _link("f", "d/d/../../outside"))
+    elif where != "committed":
+        _add_to_tar(tar, _link("f", "d/d/../../outside"))
+    before = _work_tree_and_config(repo)
+
+    with pytest.raises(apply.ApplyError, match=r"f \(it is a link whose target goes into a folder and back out"):
+        _pull(tmp_path, manifest, home, pushed)
+    assert _work_tree_and_config(repo) == before
+    assert run_git(repo, "log", "-1", "--format=%s") == "ignore"

@@ -119,8 +119,8 @@ def locate(cwd) -> dict:
     return {"kind": "tree", "root": str(cwd)}
 
 
-def _leads_into_git(root: Path, rel: str) -> bool:
-    """Whether root/rel is a link into a .git folder (never sent: pull refuses it)."""
+def _refused_link(root: Path, rel: str) -> bool:
+    """Whether root/rel is a link pull refuses whatever it leads to (into .git, or x/..): never sent."""
     path = root / rel
     return path.is_symlink() and _link_target(rel, os.readlink(path))[1] is not None
 
@@ -146,7 +146,7 @@ def _capture_git(root: Path, out: Path) -> dict:
 
     # Never git's own files (a nested repo's .git): pull refuses them, as they can run commands.
     untracked = [u for u in _split_z(git(root, "ls-files", "--others", "--exclude-standard", "-z"))
-                 if not is_git_path(u) and not _leads_into_git(root, u)]
+                 if not is_git_path(u) and not _refused_link(root, u)]
     skipped += [u for u in untracked if is_secret_name(u)]
     with tarfile.open(out / "untracked.tar", "w") as tf:
         for u in untracked:
@@ -176,7 +176,7 @@ def _capture_tree(root: Path, out: Path) -> dict:
                     continue
                 # Only files and symlinks: a pipe or socket carries nothing (opening a FIFO would block) and pull
                 # refuses special files.
-                if not (full.is_symlink() or full.is_file()):
+                if not (full.is_symlink() or full.is_file()) or _refused_link(root, rel):
                     continue
                 # Fingerprint before archiving: a file edited in between then only makes pull see a mismatch and
                 # refuse, never a match that would let pull overwrite an edit the archive doesn't have.
@@ -292,6 +292,10 @@ def _link_target(name: str, target: str) -> tuple[str | None, str | None]:
         return None, "it is a link without a valid target"
     if target.startswith("/"):
         return None, None
+    parts = [p for p in target.split("/") if p not in ("", ".")]
+    if ".." in parts[next((i for i, p in enumerate(parts) if p != ".."), len(parts)):]:
+        # "d/../x": if d is a link (one the cloud copy makes, say) that leads elsewhere than reading it as text says.
+        return None, "it is a link whose target goes into a folder and back out (x/..), which a link can redirect"
     resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
     if resolved == ".." or resolved.startswith("../"):
         return None, None
@@ -474,6 +478,11 @@ def _extract(tar_path: Path, root: Path, *, backup_dir: Path | None = None, back
                 shutil.copyfile(staged[e.name], tmp)
                 os.chmod(tmp, e.mode)
             else:
+                # Again, now that the archive's earlier links exist.
+                landing = _resolved(root, posixpath.join(posixpath.dirname(e.name), e.target))
+                if not outside_links and (landing is None or is_git_path(landing)):
+                    raise WorkspaceError(f"pull stopped before writing {e.name} (it is a link pointing outside the "
+                                         f"folder or into .git, to {e.target})")
                 os.symlink(e.target, tmp)
             os.replace(tmp, dest)
     return sorted(backed_up)
