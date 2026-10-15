@@ -70,7 +70,7 @@ def test_apply_existing_fast_forwards_and_applies_dirty(tmp_path):
     back = workspace.capture(remote, tmp_path / "ws2")
 
     assert workspace.check_existing(back, tmp_path / "ws2", local) == []
-    assert workspace.apply_existing(back, tmp_path / "ws2", local) is None
+    assert workspace.apply_existing(back, tmp_path / "ws2", local) == {"stash": None, "replaced": []}
     assert run_git(local, "rev-parse", "HEAD") == back["head"]
     assert (local / "app.py").read_text() == "print('remote dirty')\n"
     assert (local / "new.txt").read_text() == "new\n"
@@ -94,7 +94,7 @@ def test_apply_existing_detects_dirty_and_divergence(tmp_path):
         workspace.apply_existing(back, tmp_path / "ws2", local)
     assert (local / "app.py").read_text() == "dirty\n"
 
-    stash = workspace.apply_existing(back, tmp_path / "ws2", local, stash=True, force=True)
+    stash = workspace.apply_existing(back, tmp_path / "ws2", local, stash=True, force=True)["stash"]
     assert run_git(local, "rev-parse", "HEAD") == back["head"]
     assert stash in run_git(local, "stash", "list")
 
@@ -117,7 +117,7 @@ def test_pushed_uncommitted_changes_give_way_to_the_cloud_copy(tmp_path):
     assert workspace.check_existing(back, tmp_path / "ws2", local, pushed_changes=pushed["changes"]) != []
     (local / "app.py").write_text("pushed edit\n")
 
-    assert workspace.apply_existing(back, tmp_path / "ws2", local, pushed_changes=pushed["changes"]) is None
+    assert workspace.apply_existing(back, tmp_path / "ws2", local, pushed_changes=pushed["changes"])["stash"] is None
     assert (local / "app.py").read_text() == "cloud edit\n"
     assert not (local / "scratch.txt").exists()
     assert run_git(local, "stash", "list") == ""
@@ -173,7 +173,7 @@ def test_untracked_secrets_are_neither_dirty_nor_stashed(tmp_path):
     (local / ".env").write_text("SECRET=1\n")
     assert workspace.check_existing(meta, tmp_path / "ws", local) == []
     (local / "scratch.txt").write_text("wip\n")
-    assert workspace.apply_existing(meta, tmp_path / "ws", local, stash=True)
+    assert workspace.apply_existing(meta, tmp_path / "ws", local, stash=True)["stash"]
     assert not (local / "scratch.txt").exists()
     assert (local / ".env").read_text() == "SECRET=1\n"
 
@@ -417,6 +417,9 @@ def test_pull_into_a_plain_folder_backs_up_an_edited_hard_link(tmp_path):
     """Of two hard-linked files, the archive holds the second as a link to the first; an editor that saves by
     rename breaks the link locally, and that file's edit must not be lost."""
     folder, home, pushed, vm_folder, export = _plain_folder_round(tmp_path, links={"b.txt": "plan.txt"})
+    # Extraction writes a hard link as a copy of its target; link them again on the VM, so the export has one.
+    (vm_folder / "b.txt").unlink()
+    os.link(vm_folder / "plan.txt", vm_folder / "b.txt")
     manifest = export()
     with tarfile.open(tmp_path / "x" / "workspace" / "tree.tar") as tf:
         [link] = [m.name for m in tf if m.islnk()]

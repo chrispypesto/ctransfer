@@ -21,15 +21,11 @@ def is_prefix(local: list[str], remote: list[str]) -> bool:
     return len(local) <= len(remote) and remote[: len(local)] == local
 
 
-def _backup(home: Path, session_id: str, project_dir: str, workspace_root: Path | None = None,
-            workspace_files: list[str] | None = None) -> Path | None:
-    """Copy the local session (and workspace_files, paths under workspace_root) to
-    ~/.claude/ctransfer-backups/<session>/<timestamp>/, the workspace files under workspace/. None if there was
-    nothing to copy."""
+def _backup(home: Path, session_id: str, project_dir: str) -> Path:
+    """Copy the local session to ~/.claude/ctransfer-backups/<session>/<timestamp>/ (created only if there is
+    something to copy) and return that folder; the pull copies workspace files it replaces under workspace/."""
     proj = home / "projects" / project_dir
     items = [proj / f"{session_id}.jsonl", proj / session_id, proj / "memory", home / "file-history" / session_id]
-    if not any(p.exists() for p in items) and not workspace_files:
-        return None
     dest = home / "ctransfer-backups" / session_id / time.strftime("%Y%m%dT%H%M%S")
     for p in items:
         if p.is_dir():
@@ -37,9 +33,6 @@ def _backup(home: Path, session_id: str, project_dir: str, workspace_root: Path 
         elif p.exists():
             (dest / p.relative_to(home)).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, dest / p.relative_to(home))
-    for rel in workspace_files or []:
-        (dest / "workspace" / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(Path(workspace_root) / rel, dest / "workspace" / rel, follow_symlinks=False)
     return dest
 
 
@@ -158,7 +151,7 @@ def check_manifest(manifest: dict, expect: dict) -> None:
 
 def apply_export(bundle_dir, manifest: dict, *, expect: dict, home: Path | None = None, force: bool = False,
                  as_fork: bool = False, stash: bool = False, pushed_changes: str | None = None,
-                 pushed_files: dict | None = None) -> dict:
+                 pushed_files: dict | None = None, accept_config: bool = False) -> dict:
     """Overwrite the local transcript, file-history, memory and workspace (unless expect has none) with the
     cloud copy.
 
@@ -169,10 +162,15 @@ def apply_export(bundle_dir, manifest: dict, *, expect: dict, home: Path | None 
     pushed_changes is the fingerprint of the uncommitted work that was pushed (workspace.changes_digest): local
     changes matching it are replaced, not refused or stashed. For a non-git folder, pushed_files is the push's
     per-file fingerprints: files changed since are refused, or with force backed up under workspace/ and replaced.
-    Returns {"session_id", "backup", "transcript", "stash", "overwritten"}; transcript is None when the cloud
-    session never recorded one (a `ctransfer new` session nobody prompted), in which case only the workspace comes
-    back. stash is {"root", "message"} of the git stash holding local changes set aside with stash, else None.
-    overwritten lists the non-git folder's files changed since the push that force replaced (copies in backup).
+    The workspace's untracked files (or a non-git folder's) are checked member by member and written only inside
+    it, never into .git; in a git repo every untracked or ignored local file they replace is backed up under
+    workspace/. New or changed config files (workspace.config_changes: .claude/, .mcp.json, CLAUDE.md, .envrc,
+    .vscode/) are refused unless accept_config.
+    Returns {"session_id", "backup", "transcript", "stash", "overwritten", "replaced"}; transcript is None when the
+    cloud session never recorded one (a `ctransfer new` session nobody prompted), in which case only the workspace
+    comes back. stash is {"root", "message"} of the git stash holding local changes set aside with stash, else None.
+    overwritten lists the non-git folder's files changed since the push that force replaced; replaced, every local
+    workspace file the pull replaced after copying it to the backup (overwritten included).
     """
     bundle_dir = Path(bundle_dir)
     home = Path(home or sessions.claude_home())
@@ -193,23 +191,29 @@ def apply_export(bundle_dir, manifest: dict, *, expect: dict, home: Path | None 
     ws = manifest["workspace"]
     if workspace_too:
         problems = workspace.check_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force,
-                                            pushed_changes=pushed_changes, pushed_files=pushed_files)
+                                            pushed_changes=pushed_changes, pushed_files=pushed_files,
+                                            accept_config=accept_config)
         if problems:
             raise ApplyError("; ".join(problems))
 
     overwritten = []
     if workspace_too and ws["kind"] == "tree" and force:
         overwritten = workspace.tree_conflicts(bundle_dir / "workspace", ws["root"], pushed_files)
-    backup = _backup(home, sid, project_dir, Path(ws["root"]), overwritten)
-    stash_info = None
+    backup = _backup(home, sid, project_dir)
+    stash_info, replaced = None, []
     if workspace_too:
-        message = workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force,
-                                           pushed_changes=pushed_changes, pushed_files=pushed_files)
-        if message:
-            stash_info = {"root": ws["root"], "message": message}
+        try:
+            applied = workspace.apply_existing(ws, bundle_dir / "workspace", ws["root"], stash=stash, force=force,
+                                               pushed_changes=pushed_changes, pushed_files=pushed_files,
+                                               accept_config=accept_config, backup_dir=backup / "workspace")
+        except workspace.WorkspaceError as e:
+            raise ApplyError(str(e)) from e
+        replaced = applied["replaced"]
+        if applied["stash"]:
+            stash_info = {"root": ws["root"], "message": applied["stash"]}
 
-    result = {"session_id": sid, "backup": str(backup) if backup else None, "transcript": None, "stash": stash_info,
-              "overwritten": overwritten}
+    result = {"session_id": sid, "backup": str(backup) if backup.exists() else None, "transcript": None,
+              "stash": stash_info, "overwritten": overwritten, "replaced": replaced}
     if not has_transcript:
         return result
     target_sid = str(uuid.uuid4()) if as_fork else sid

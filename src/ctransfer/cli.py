@@ -237,7 +237,7 @@ def _send(api, session_id: str, cwd: str, build, *, remote_control: bool, size: 
 
 
 def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = False, stash: bool = False,
-         sleep=time.sleep) -> dict:
+         accept_config: bool = False, sleep=time.sleep) -> dict:
     """Bring a transfer's cloud copy back over the local session and workspace, then delete the transfer.
 
     Exporting shuts the VM down, so every check that can run without the cloud copy runs first, against what
@@ -269,14 +269,14 @@ def pull(api, tid: str, *, home: Path, force: bool = False, as_fork: bool = Fals
         expect = apply.pushed_copy(pushed) if pushed else apply.transfer_copy(item)
         result = apply.apply_export(Path(tmp) / "x", manifest, expect=expect, home=home, force=force,
                                     as_fork=as_fork, stash=stash, pushed_changes=pushed_ws.get("changes"),
-                                    pushed_files=pushed_ws.get("files"))
+                                    pushed_files=pushed_ws.get("files"), accept_config=accept_config)
     api.call("DELETE", f"/sessions/{tid}")  # the server already tore the VM down at export; this is idempotent
     return result
 
 
 def cmd_pull(args) -> None:
     result = pull(api_mod.Api.from_config(), args.transfer_id, home=sessions.claude_home(), force=args.force,
-                  as_fork=args.as_fork, stash=args.stash)
+                  as_fork=args.as_fork, stash=args.stash, accept_config=args.accept_config)
     forget_transfer(args.transfer_id)
     _report_pull(result)
 
@@ -287,6 +287,11 @@ def _report_pull(result: dict) -> None:
     if result.get("overwritten"):
         _print(f"replaced your local edits to {', '.join(result['overwritten'])} with the cloud copy; your versions "
                f"are in {Path(result['backup']) / 'workspace'}")
+    others = [f for f in result.get("replaced", []) if f not in result.get("overwritten", [])]
+    if others:
+        shown = ", ".join(others[:10]) + (f" and {len(others) - 10} more" if len(others) > 10 else "")
+        _print(f"the cloud copy replaced local files git doesn't track ({shown}); your versions are in "
+               f"{Path(result['backup']) / 'workspace'}")
     if result.get("stash"):
         root, message = result["stash"]["root"], result["stash"]["message"]
         _print(f"your uncommitted changes in {root} were set aside as the git stash \"{message}\". To get them "
@@ -1133,6 +1138,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="overwrite local transcript/branch even if they diverged, and local edits in a folder that isn't a git repo (backed up first)")
     p.add_argument("--as-fork", action="store_true", help="write the cloud transcript under a new session id")
     p.add_argument("--stash", action="store_true", help="set aside local changes made since the push as a git stash instead of refusing")
+    p.add_argument("--accept-config", action="store_true", help="apply new or changed config files from the cloud copy (.claude/, .mcp.json, CLAUDE.md, .envrc, .vscode/), which can run commands here")
     p.set_defaults(fn=cmd_pull)
 
     p = sub.add_parser("resume", help="continue a pulled session locally (claude --resume, told it is back)")
