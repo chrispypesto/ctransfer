@@ -397,24 +397,102 @@ def cmd_account_delete(args) -> None:
            f"session(s) and {out['schedules']} schedule(s) removed. You are signed out.")
 
 
+CLAUDE_TOKEN_START = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
+TOKEN_PART = re.compile(r"[A-Za-z0-9_-]+")
+LINE_EDGES = " \t│|"  # a terminal box around the token: its borders are not part of it
+
+
+def claude_token_in(text: str) -> str | None:
+    """The token in what `claude setup-token` printed, pasted or piped whole or in part. The terminal may have
+    wrapped the token over several lines; those are joined back up."""
+    lines = [line.strip(LINE_EDGES) for line in text.splitlines()]
+    for i, line in enumerate(lines):
+        found = CLAUDE_TOKEN_START.search(line)
+        if not found:
+            continue
+        token = found.group()
+        if found.end() == len(line):  # the token ends its line, so the next lines may be the rest of it
+            for rest in lines[i + 1:]:
+                if not TOKEN_PART.fullmatch(rest):
+                    break
+                token += rest
+        return token
+    return None
+
+
 def cmd_token(args) -> None:
     api = api_mod.Api.from_config()
     if args.action == "rm":
         api.call("DELETE", "/me/claude-token")
         return
-    token = _read_secret("token from `claude setup-token`: ")
-    api.call("PUT", "/me/claude-token", {"token": token.strip()})
+    if sys.stdin.isatty():
+        _print("Run `claude setup-token` (here or in another terminal) and sign in. It prints a token that "
+               "starts with sk-ant-; copy it.")
+    token = claude_token_in(_read_secret("Paste the token (it is not shown) and press Enter: "))
+    if not token:
+        raise SystemExit("no Claude token found (it starts with sk-ant-). Run `claude setup-token` on its own, then "
+                         "`ctransfer token set` and paste the token it prints.")
+    api.call("PUT", "/me/claude-token", {"token": token})
     _print("Claude token saved; your VMs will run on it")
 
 
 def _read_secret(prompt: str) -> str:
-    """A secret from stdin when piped, else typed at a hidden prompt (never a command-line argument, which shell
-    history and process listings keep)."""
+    """A secret from stdin when piped, else typed or pasted at a hidden prompt (never a command-line argument, which
+    shell history and process listings keep)."""
     if sys.stdin.isatty():
-        import getpass
-
-        return getpass.getpass(prompt)
+        return _read_hidden(prompt)
     return sys.stdin.read()
+
+
+def _read_hidden(prompt: str) -> str:
+    """What the user types or pastes, not echoed, up to Enter. A paste of several lines is read whole, so none of
+    it is left over for the shell to run once ctransfer exits."""
+    import codecs
+    import select
+
+    try:
+        import termios
+    except ImportError:  # Windows
+        import getpass
+        import msvcrt
+
+        text = getpass.getpass(prompt) + "\n"
+        # getpass stops at the first Enter; the rest of a paste is still waiting, and the shell would run it
+        while msvcrt.kbhit():
+            ch = msvcrt.getwch()
+            text += "\n" if ch == "\r" else ch
+        return text
+
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    quiet = termios.tcgetattr(fd)
+    quiet[3] &= ~(termios.ECHO | termios.ICANON)  # no echo; each key arrives as typed, not a line at a time
+    quiet[6][termios.VMIN] = 1
+    quiet[6][termios.VTIME] = 0
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    text = ""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")  # a read may end inside a character
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, quiet)  # keeps anything pasted early
+        while True:
+            raw = os.read(fd, 4096)
+            chunk = decoder.decode(raw, final=not raw)
+            if not raw or "\x04" in chunk:  # end of input, or Ctrl-D
+                text += chunk.split("\x04")[0]
+                break
+            for ch in chunk:
+                if ch in "\x7f\b":
+                    text = text[:-1]
+                else:
+                    text += ch
+            # Enter, and nothing else on its way: a paste arrives all at once, so it is over
+            if text.endswith(("\n", "\r")) and not select.select([fd], [], [], 0.2)[0]:
+                break
+    finally:
+        termios.tcsetattr(fd, termios.TCSAFLUSH, saved)
+        sys.stderr.write("\n")
+    return text.replace("\r", "\n")
 
 
 def cmd_secret_set(args) -> None:
@@ -1120,7 +1198,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("login", help="sign in with GitHub").set_defaults(fn=cmd_login)
 
-    p = sub.add_parser("token", help="store (set, read from stdin) or delete (rm) the Claude token your VMs run on")
+    p = sub.add_parser("token", help="store (set: paste the token `claude setup-token` prints) or delete (rm) the "
+                                     "Claude token your VMs run on")
     p.add_argument("action", choices=("set", "rm"))
     p.set_defaults(fn=cmd_token)
     add_secret_parser(sub)
