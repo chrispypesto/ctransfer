@@ -447,6 +447,7 @@ def _read_secret(prompt: str) -> str:
 def _read_hidden(prompt: str) -> str:
     """What the user types or pastes, not echoed, up to Enter. A paste of several lines is read whole, so none of
     it is left over for the shell to run once ctransfer exits."""
+    import codecs
     import select
 
     try:
@@ -465,11 +466,13 @@ def _read_hidden(prompt: str) -> str:
     sys.stderr.write(prompt)
     sys.stderr.flush()
     text = ""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")  # a read may end inside a character
     try:
         termios.tcsetattr(fd, termios.TCSANOW, quiet)  # keeps anything pasted early
         while True:
-            chunk = os.read(fd, 4096).decode(errors="replace")
-            if not chunk or "\x04" in chunk:  # end of input, or Ctrl-D
+            raw = os.read(fd, 4096)
+            chunk = decoder.decode(raw, final=not raw)
+            if not raw or "\x04" in chunk:  # end of input, or Ctrl-D
                 text += chunk.split("\x04")[0]
                 break
             for ch in chunk:
