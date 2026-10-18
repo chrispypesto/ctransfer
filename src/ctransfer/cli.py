@@ -452,10 +452,16 @@ def _read_hidden(prompt: str) -> str:
 
     try:
         import termios
-    except ImportError:  # Windows: a pasted token must be on one line there
+    except ImportError:  # Windows
         import getpass
+        import msvcrt
 
-        return getpass.getpass(prompt)
+        text = getpass.getpass(prompt) + "\n"
+        # getpass stops at the first Enter; the rest of a paste is still waiting, and the shell would run it
+        while msvcrt.kbhit():
+            ch = msvcrt.getwch()
+            text += "\n" if ch == "\r" else ch
+        return text
 
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
