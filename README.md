@@ -10,9 +10,12 @@ Into any Python 3.11+ environment (venv, pipx, uv, conda, …):
 
 ```bash
 pip install "git+https://github.com/chrispypesto/ctransfer.git"
-ctransfer login                            # GitHub device flow; signing in accepts the Terms of Use
-claude setup-token | ctransfer token set   # the Claude token your VMs run on
+ctransfer login       # GitHub device flow; signing in accepts the Terms of Use
+claude setup-token    # sign in; it prints the token your VMs run on (starts with sk-ant-)
+ctransfer token set   # paste that token when asked
 ```
+
+Paste the token, or all of what `claude setup-token` printed: `token set` picks the token out, even when the terminal wrapped it over several lines. A token saved in a file or variable can be piped in instead: `ctransfer token set < token.txt`.
 
 From a checkout, `make install` installs it into the active environment's Python (`make install PYTHON=/path/to/python` picks another).
 

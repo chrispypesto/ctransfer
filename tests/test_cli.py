@@ -143,6 +143,14 @@ def test_account_delete_asks_first_and_changes_nothing_unless_confirmed(monkeypa
     assert api_mod.load_config()["token"] == "test-token"
 
 
+def test_token_set_without_a_token_says_how_to_get_one(monkeypatch):
+    configure_signed_in()  # api.invalid: reaching the control plane would fail the test
+    # `claude setup-token | ctransfer token set`: setup-token shows nothing and hands on nothing when piped
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    with pytest.raises(SystemExit, match=r"Run `claude setup-token` on its own, then `ctransfer token set` and paste"):
+        cli.main(["token", "set"])
+
+
 def test_a_service_token_in_the_environment_signs_commands_in_without_saving_it(monkeypatch, capsys):
     with pytest.raises(SystemExit, match="CTRANSFER_TOKEN"):  # neither signed in nor a token: says both ways
         cli.main(["account", "delete", "--yes"])
