@@ -448,7 +448,13 @@ def _read_hidden(prompt: str) -> str:
     """What the user types or pastes, not echoed, up to Enter. A paste of several lines is read whole, so none of
     it is left over for the shell to run once ctransfer exits."""
     import select
-    import termios
+
+    try:
+        import termios
+    except ImportError:  # Windows: a pasted token must be on one line there
+        import getpass
+
+        return getpass.getpass(prompt)
 
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
