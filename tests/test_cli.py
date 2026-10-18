@@ -151,6 +151,32 @@ def test_token_set_without_a_token_says_how_to_get_one(monkeypatch):
         cli.main(["token", "set"])
 
 
+CLAUDE_TOKEN = "sk-ant-oat01-" + "Ab3_x-9" * 14 + "AA"
+
+
+def wrapped(token, width, edge=""):
+    return "\n".join(f"{edge}  {token[i:i + width]}{edge}" for i in range(0, len(token), width))
+
+
+@pytest.mark.parametrize("pasted", [
+    CLAUDE_TOKEN,
+    CLAUDE_TOKEN + "\n",
+    wrapped(CLAUDE_TOKEN, 40) + "\n\n  Store this token securely. You won't be able to see it again.\n",
+    wrapped(CLAUDE_TOKEN, 40, edge="│") + "\n│ Store this token securely. │\n",
+    "✓ Long-lived authentication token created successfully!\n\n  Your OAuth token (valid for 1 year):\n\n"
+    + wrapped(CLAUDE_TOKEN, 80)
+    + "\n\n  Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>\n",
+])
+def test_the_token_is_found_in_what_setup_token_printed(pasted):
+    assert cli.claude_token_in(pasted) == CLAUDE_TOKEN
+
+
+def test_a_line_after_the_token_is_joined_only_if_it_could_be_more_of_it():
+    assert cli.claude_token_in("token: sk-ant-abc\nStore this token securely.") == "sk-ant-abc"
+    assert cli.claude_token_in("sk-ant-abc and more\ndef") == "sk-ant-abc"  # the token didn't end its line
+    assert cli.claude_token_in("Your OAuth token:\n\nnothing here\n") is None
+
+
 def test_a_service_token_in_the_environment_signs_commands_in_without_saving_it(monkeypatch, capsys):
     with pytest.raises(SystemExit, match="CTRANSFER_TOKEN"):  # neither signed in nor a token: says both ways
         cli.main(["account", "delete", "--yes"])
