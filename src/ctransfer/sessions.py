@@ -89,7 +89,7 @@ def find_transcript(session_id: str, home: Path | None = None) -> Path | None:
 
 def read_records(path: Path) -> list[dict]:
     records = []
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             try:
                 rec = json.loads(line)

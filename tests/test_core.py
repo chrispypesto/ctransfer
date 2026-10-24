@@ -442,3 +442,10 @@ def test_cli_version():
     assert out.returncode == 0
     import ctransfer
     assert out.stdout.strip() == f"ctransfer {ctransfer.__version__}"
+
+
+def test_read_records_skips_invalid_utf8_line(tmp_path):
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b'{"cwd":"/x","uuid":"a"}\n\xff\xfe\n{"uuid":"b"}\n')
+    assert sessions.read_records(path) == [{"cwd": "/x", "uuid": "a"}, {"uuid": "b"}]
+    assert sessions.transcript_cwd(path) == "/x"
