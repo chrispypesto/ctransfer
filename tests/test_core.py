@@ -434,3 +434,11 @@ def test_pull_into_a_plain_folder_backs_up_an_edited_hard_link(tmp_path):
     assert result["overwritten"] == [link]
     assert (Path(result["backup"]) / "workspace" / link).read_text() == "edited here\n"
     assert (folder / link).read_text() == "v1\n"
+
+
+def test_cli_version():
+    import subprocess, sys
+    out = subprocess.run([sys.executable, "-c", "from ctransfer.cli import main; main()", "--version"], capture_output=True, text=True)
+    assert out.returncode == 0
+    import ctransfer
+    assert out.stdout.strip() == f"ctransfer {ctransfer.__version__}"
