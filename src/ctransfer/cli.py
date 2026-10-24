@@ -15,6 +15,7 @@ import tempfile
 import time
 import urllib.parse
 import uuid
+from importlib import metadata
 from pathlib import Path
 
 from . import api as api_mod
@@ -1191,8 +1192,16 @@ def size_arg(p) -> None:
     p.add_argument("--size", help="VM size: nano (default), small (2 GB) or large (8 GB); bigger sizes need Pro")
 
 
+def client_version() -> str:
+    try:
+        return metadata.version("ctransfer")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ctransfer", description="Move a Claude Code session to a cloud VM and back.")
+    ap.add_argument("--version", action="version", version=f"ctransfer {client_version()}")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
     # Listed in the order a user meets them: set up, send work out, check on it, bring it back.
 
