@@ -440,4 +440,5 @@ def test_cli_version():
     import subprocess, sys
     out = subprocess.run([sys.executable, "-c", "from ctransfer.cli import main; main()", "--version"], capture_output=True, text=True)
     assert out.returncode == 0
-    assert out.stdout.startswith("ctransfer ") and out.stdout.strip() != "ctransfer"
+    import ctransfer
+    assert out.stdout.strip() == f"ctransfer {ctransfer.__version__}"
