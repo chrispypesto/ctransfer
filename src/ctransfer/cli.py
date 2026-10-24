@@ -18,6 +18,7 @@ import uuid
 from importlib import metadata
 from pathlib import Path
 
+from . import __version__
 from . import api as api_mod
 from . import agent, apply, bundle, net, sessions, workspace
 
@@ -1196,7 +1197,7 @@ def client_version() -> str:
     try:
         return metadata.version("ctransfer")
     except metadata.PackageNotFoundError:
-        return "unknown"
+        return __version__
 
 
 def build_parser() -> argparse.ArgumentParser:
